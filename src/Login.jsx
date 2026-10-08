@@ -1,18 +1,33 @@
 import React, { useState } from "react";
 import "./Login.css";
 
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || "/api";
+
 export default function Login({ onLogin }) {
+  const [authMode, setAuthMode] = useState("signin");
+  const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
   const [rememberMe, setRememberMe] = useState(true);
   const [errors, setErrors] = useState({});
   const [isLoading, setIsLoading] = useState(false);
   const [authMessage, setAuthMessage] = useState("");
+  const [transitionUser, setTransitionUser] = useState(null);
 
-  // Basic frontend validation
+  function enterDashboard(account) {
+    setIsLoading(false);
+    setTransitionUser(account);
+    window.setTimeout(() => onLogin(account), 3000);
+  }
+
   function validate() {
     const newErrors = {};
+
+    if (authMode === "create" && !name.trim()) {
+      newErrors.name = "Full name is required";
+    }
 
     if (!email.trim()) {
       newErrors.email = "Email address is required";
@@ -26,52 +41,166 @@ export default function Login({ onLogin }) {
       newErrors.password = "Password must be at least 6 characters";
     }
 
+    if (authMode === "create") {
+      if (!confirmPassword) {
+        newErrors.confirmPassword = "Please confirm your password";
+      } else if (confirmPassword !== password) {
+        newErrors.confirmPassword = "Passwords do not match";
+      }
+    }
+
     setErrors(newErrors);
     return Object.keys(newErrors).length === 0;
   }
 
-  function handleSubmit(event) {
+  async function handleSubmit(event) {
     event.preventDefault();
     setAuthMessage("");
 
     if (!validate()) return;
 
     setIsLoading(true);
+    const normalizedEmail = email.trim().toLowerCase();
 
-    // Simulated frontend authentication response
-    setTimeout(() => {
-      setIsLoading(false);
-      // Derive a user-friendly name from email if not standard demo
-      const username = email.split("@")[0];
-      const formattedName =
-        username.charAt(0).toUpperCase() + username.slice(1).replace(/[._]/g, " ");
+    try {
+      if (authMode === "create") {
+        const response = await fetch(`${API_BASE_URL}/auth/signup`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          credentials: "include",
+          body: JSON.stringify({
+            name: name.trim(),
+            email: normalizedEmail,
+            password,
+          }),
+        });
 
-      onLogin({
-        name: formattedName || "Alex Kumar",
-        email: email.trim(),
-        role: "Personal Account",
+        const data = await response.json().catch(() => ({}));
+
+        if (!response.ok) {
+          setIsLoading(false);
+          const errorDetail =
+            data.detail ||
+            data.message ||
+            `Unable to create account (HTTP ${response.status}). Please check the backend server logs.`;
+          setErrors({ email: errorDetail });
+          setAuthMessage(errorDetail);
+          return;
+        }
+
+        const createdAccount = {
+          id: data.id,
+          name: data.name || name.trim(),
+          email: data.email || normalizedEmail,
+          role: data.role || "Personal Account",
+        };
+
+        setName("");
+        setEmail("");
+        setPassword("");
+        setConfirmPassword("");
+        setErrors({});
+        setAuthMessage("");
+        enterDashboard(createdAccount);
+        return;
+      }
+
+      // authMode === "signin"
+      const response = await fetch(`${API_BASE_URL}/auth/login`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({
+          email: normalizedEmail,
+          password,
+        }),
       });
-    }, 600);
+
+      const data = await response.json().catch(() => ({}));
+
+      if (!response.ok) {
+        setIsLoading(false);
+        const errorDetail =
+          data.detail ||
+          data.message ||
+          `Sign-in failed (HTTP ${response.status}). Please check the backend server logs.`;
+        setErrors({
+          email: errorDetail,
+          password: "Please check your password.",
+        });
+        setAuthMessage(errorDetail);
+        return;
+      }
+
+      const loggedAccount = {
+        id: data.id,
+        name: data.name || normalizedEmail.split("@", 1)[0],
+        email: data.email || normalizedEmail,
+        role: data.role || "Personal Account",
+      };
+
+      setName("");
+      setEmail("");
+      setPassword("");
+      setConfirmPassword("");
+      setErrors({});
+      setAuthMessage("");
+      enterDashboard(loggedAccount);
+    } catch (networkError) {
+      console.warn("Could not reach the authentication server:", networkError);
+      setIsLoading(false);
+      setAuthMessage("Could not connect to the backend. Check that the FastAPI server is running and try again.");
+    }
   }
 
   function handleDemoFill() {
+    setAuthMode("signin");
+    setName("");
     setEmail("alex.kumar@spendai.io");
     setPassword("password123");
+    setConfirmPassword("password123");
     setErrors({});
     setAuthMessage("✨ Demo credentials loaded! Click Sign In to continue.");
   }
 
-  function handleSocialLogin(provider) {
-    setIsLoading(true);
-    setAuthMessage(`Connecting with ${provider}...`);
-    setTimeout(() => {
-      setIsLoading(false);
-      onLogin({
-        name: "Alex Kumar",
-        email: `alex.kumar@${provider.toLowerCase()}.com`,
-        role: "Personal Account",
-      });
-    }, 700);
+  function explainSocialLoginUnavailable(provider) {
+    setAuthMessage(`${provider} sign-in is not configured yet. Use email and password instead.`);
+  }
+
+  if (transitionUser) {
+    const firstName = transitionUser.name.trim().split(/\s+/)[0];
+
+    return (
+      <div className="login-transition" role="status" aria-live="polite">
+        <div className="transition-glow transition-glow-one"></div>
+        <div className="transition-glow transition-glow-two"></div>
+        <div className="transition-content">
+          <div className="transition-logo">
+            <span className="transition-orbit"></span>
+            <svg
+              width="34"
+              height="34"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.8"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              aria-hidden="true"
+            >
+              <path d="m12 3 1.4 5.6L19 10l-5.6 1.4L12 17l-1.4-5.6L5 10l5.6-1.4L12 3Z" />
+              <path d="m19 16 .6 2.4L22 19l-2.4.6L19 22l-.6-2.4L16 19l2.4-.6L19 16Z" />
+            </svg>
+          </div>
+          <p className="transition-brand">SPENDAI</p>
+          <h2>Welcome, {firstName}</h2>
+          <p className="transition-message">Getting your expense dashboard ready</p>
+          <div className="transition-progress" aria-hidden="true">
+            <span></span>
+          </div>
+        </div>
+      </div>
+    );
   }
 
   return (
@@ -117,7 +246,7 @@ export default function Login({ onLogin }) {
 
               <p className="showcase-subheading">
                 Automatically categorize receipts, visualize spending trends, and receive
-                instant monthly insights with over 95% classification accuracy.
+                monthly insights with AI-powered expense categorization.
               </p>
 
               {/* Floating Feature Cards Preview */}
@@ -125,8 +254,8 @@ export default function Login({ onLogin }) {
                 <div className="feature-card preview-card-1">
                   <div className="feature-card-icon">⚡</div>
                   <div className="feature-card-text">
-                    <strong>95.4% AI Accuracy</strong>
-                    <span>Smart multi-category detection</span>
+                    <strong>AI-Powered Categorization</strong>
+                    <span>Gemini AI with rule-based fallback</span>
                   </div>
                 </div>
 
@@ -177,26 +306,56 @@ export default function Login({ onLogin }) {
               </div>
             </div>
 
-            <div className="card-header">
-              <h3>Welcome back</h3>
-              <p>Sign in to access your AI expense workspace</p>
-            </div>
-
-            {/* Quick Demo Helper */}
-            <div className="demo-credentials-banner">
-              <div className="demo-icon">💡</div>
-              <div className="demo-content">
-                <strong>Looking for a quick demo?</strong>
-                <span>Try one-click login with prefilled credentials.</span>
-              </div>
+            <div className="auth-mode-toggle">
               <button
                 type="button"
-                className="demo-action-btn"
-                onClick={handleDemoFill}
+                className={authMode === "signin" ? "mode-btn active" : "mode-btn"}
+                onClick={() => {
+                  setAuthMode("signin");
+                  setErrors({});
+                  setAuthMessage("");
+                }}
               >
-                Autofill Demo
+                Sign In
+              </button>
+              <button
+                type="button"
+                className={authMode === "create" ? "mode-btn active" : "mode-btn"}
+                onClick={() => {
+                  setAuthMode("create");
+                  setErrors({});
+                  setAuthMessage("");
+                }}
+              >
+                Create Account
               </button>
             </div>
+
+            <div className="card-header">
+              <h3>{authMode === "signin" ? "Welcome back" : "Create your account"}</h3>
+              <p>
+                {authMode === "signin"
+                  ? "Sign in to access your AI expense workspace"
+                  : "Create an account and start categorizing your spending"}
+              </p>
+            </div>
+
+            {import.meta.env.DEV && (
+              <div className="demo-credentials-banner">
+                <div className="demo-icon">💡</div>
+                <div className="demo-content">
+                  <strong>Looking for a quick demo?</strong>
+                  <span>Try one-click login with prefilled credentials.</span>
+                </div>
+                <button
+                  type="button"
+                  className="demo-action-btn"
+                  onClick={handleDemoFill}
+                >
+                  Autofill Demo
+                </button>
+              </div>
+            )}
 
             {authMessage && (
               <div className="auth-alert-message">
@@ -205,6 +364,42 @@ export default function Login({ onLogin }) {
             )}
 
             <form onSubmit={handleSubmit} noValidate className="login-form">
+              {authMode === "create" && (
+                <div className="login-field-group">
+                  <label htmlFor="name">Full name</label>
+                  <div className={`input-wrapper ${errors.name ? "input-error" : ""}`}>
+                    <span className="input-icon">
+                      <svg
+                        width="18"
+                        height="18"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="2"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                      >
+                        <path d="M20 21a8 8 0 0 0-16 0" />
+                        <circle cx="12" cy="7" r="4" />
+                      </svg>
+                    </span>
+                    <input
+                      id="name"
+                      type="text"
+                      placeholder="Alex Kumar"
+                      value={name}
+                      onChange={(e) => {
+                        setName(e.target.value);
+                        if (errors.name) setErrors((prev) => ({ ...prev, name: "" }));
+                      }}
+                      autoComplete="name"
+                      autoFocus
+                    />
+                  </div>
+                  {errors.name && <span className="field-error-text">{errors.name}</span>}
+                </div>
+              )}
+
               {/* Email Input */}
               <div className="login-field-group">
                 <label htmlFor="email">Email address</label>
@@ -234,7 +429,6 @@ export default function Login({ onLogin }) {
                       if (errors.email) setErrors((prev) => ({ ...prev, email: "" }));
                     }}
                     autoComplete="email"
-                    autoFocus
                   />
                 </div>
                 {errors.email && <span className="field-error-text">{errors.email}</span>}
@@ -280,7 +474,7 @@ export default function Login({ onLogin }) {
                       setPassword(e.target.value);
                       if (errors.password) setErrors((prev) => ({ ...prev, password: "" }));
                     }}
-                    autoComplete="current-password"
+                    autoComplete={authMode === "create" ? "new-password" : "current-password"}
                   />
                   <button
                     type="button"
@@ -325,6 +519,45 @@ export default function Login({ onLogin }) {
                 {errors.password && <span className="field-error-text">{errors.password}</span>}
               </div>
 
+              {authMode === "create" && (
+                <div className="login-field-group">
+                  <label htmlFor="confirmPassword">Confirm password</label>
+                  <div className={`input-wrapper ${errors.confirmPassword ? "input-error" : ""}`}>
+                    <span className="input-icon">
+                      <svg
+                        width="18"
+                        height="18"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="2"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                      >
+                        <rect width="18" height="11" x="3" y="11" rx="2" ry="2" />
+                        <path d="M7 11V7a5 5 0 0 1 10 0v4" />
+                      </svg>
+                    </span>
+                    <input
+                      id="confirmPassword"
+                      type={showPassword ? "text" : "password"}
+                      placeholder="Confirm password"
+                      value={confirmPassword}
+                      onChange={(e) => {
+                        setConfirmPassword(e.target.value);
+                        if (errors.confirmPassword) {
+                          setErrors((prev) => ({ ...prev, confirmPassword: "" }));
+                        }
+                      }}
+                      autoComplete="new-password"
+                    />
+                  </div>
+                  {errors.confirmPassword && (
+                    <span className="field-error-text">{errors.confirmPassword}</span>
+                  )}
+                </div>
+              )}
+
               {/* Remember Me */}
               <div className="login-options-row">
                 <label className="remember-me-label">
@@ -347,11 +580,11 @@ export default function Login({ onLogin }) {
                 {isLoading ? (
                   <>
                     <span className="spinner"></span>
-                    <span>Signing in...</span>
+                    <span>{authMode === "create" ? "Creating account..." : "Signing in..."}</span>
                   </>
                 ) : (
                   <>
-                    <span>Sign In to SpendAI</span>
+                    <span>{authMode === "create" ? "Create Account" : "Sign In to SpendAI"}</span>
                     <svg
                       width="18"
                       height="18"
@@ -379,7 +612,7 @@ export default function Login({ onLogin }) {
               <button
                 type="button"
                 className="social-btn"
-                onClick={() => handleSocialLogin("Google")}
+                onClick={() => explainSocialLoginUnavailable("Google")}
               >
                 <svg width="18" height="18" viewBox="0 0 24 24">
                   <path
@@ -405,7 +638,7 @@ export default function Login({ onLogin }) {
               <button
                 type="button"
                 className="social-btn"
-                onClick={() => handleSocialLogin("GitHub")}
+                onClick={() => explainSocialLoginUnavailable("GitHub")}
               >
                 <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
                   <path
@@ -420,14 +653,7 @@ export default function Login({ onLogin }) {
 
             <div className="login-card-footer">
               <p>
-                Don&apos;t have an account?{" "}
-                <button
-                  type="button"
-                  className="inline-signup-btn"
-                  onClick={handleDemoFill}
-                >
-                  Create demo account
-                </button>
+                Don&apos;t have an account? Use the Create Account option above.
               </p>
               <div className="secure-badge">
                 <svg

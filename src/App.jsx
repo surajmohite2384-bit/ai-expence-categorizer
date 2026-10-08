@@ -3,25 +3,46 @@ import "./App.css";
 import Login from "./Login.jsx";
 import { predictCategory } from "./aiCategorizer.js";
 
-const API_BASE_URL = "http://127.0.0.1:8000";
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || "/api";
 
 const categories = [
-  "Food & Dining",
-  "Transport",
+  "Food",
+  "Groceries",
   "Shopping",
-  "Bills & Utilities",
+  "Transportation",
   "Entertainment",
-  "Health Care",
+  "Bills & Utilities",
+  "Healthcare",
+  "Education",
+  "Travel",
   "Other",
 ];
 
+const MONTH_NAMES = [
+  "January",
+  "February",
+  "March",
+  "April",
+  "May",
+  "June",
+  "July",
+  "August",
+  "September",
+  "October",
+  "November",
+  "December",
+];
+
 const categoryColors = {
-  "Food & Dining": "#7c5cff",
-  Transport: "#19b5fe",
+  Food: "#7c5cff",
+  Groceries: "#20c997",
   Shopping: "#ff8a65",
+  Transportation: "#19b5fe",
   "Bills & Utilities": "#f7b731",
   Entertainment: "#ef5da8",
-  "Health Care": "#20c997",
+  Healthcare: "#20c997",
+  Education: "#7057e8",
+  Travel: "#19b5fe",
   Other: "#9aa4b2",
 };
 
@@ -75,6 +96,12 @@ function Icon({ name, size = 20 }) {
         <path d="M12 5v14M5 12h14" />
       </svg>
     ),
+    download: (
+      <svg {...common}>
+        <path d="M12 3v12m0 0 4-4m-4 4-4-4" />
+        <path d="M5 17v3h14v-3" />
+      </svg>
+    ),
     search: (
       <svg {...common}>
         <circle cx="11" cy="11" r="7" />
@@ -126,12 +153,27 @@ function Icon({ name, size = 20 }) {
   return icons[name] || null;
 }
 
-function formatCurrency(value) {
-  return new Intl.NumberFormat("en-IN", {
+const CURRENCY_CONFIG = {
+  INR: { code: "INR", symbol: "\u20B9", locale: "en-IN", name: "Indian Rupee (\u20B9)" },
+};
+
+function formatCurrency(value, currency = "INR") {
+  const config = CURRENCY_CONFIG[currency] || CURRENCY_CONFIG.INR;
+  return new Intl.NumberFormat(config.locale, {
     style: "currency",
-    currency: "INR",
+    currency: config.code,
     maximumFractionDigits: 0,
-  }).format(value);
+  }).format(value || 0);
+}
+
+function formatChartAxisValue(value, currency = "INR") {
+  const config = CURRENCY_CONFIG[currency] || CURRENCY_CONFIG.INR;
+  const symbol = config.symbol;
+  if (value >= 1000) {
+    return `${symbol}${Number((value / 1000).toFixed(1))}k`;
+  }
+
+  return `${symbol}${Math.round(value || 0)}`;
 }
 
 function formatDate(date) {
@@ -142,18 +184,224 @@ function formatDate(date) {
   });
 }
 
+function parseLocalDateOnly(value) {
+  const match = String(value || "").slice(0, 10).match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!match) return null;
+
+  const [, year, month, day] = match;
+  const date = new Date(Number(year), Number(month) - 1, Number(day));
+  return date.getFullYear() === Number(year) &&
+    date.getMonth() === Number(month) - 1 &&
+    date.getDate() === Number(day)
+    ? date
+    : null;
+}
+
+function localDateInputValue(date = new Date()) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
 function getCategoryIcon(category) {
   const icons = {
-    "Food & Dining": "🍔",
-    Transport: "🚕",
-    Shopping: "🛍️",
-    "Bills & Utilities": "💡",
-    Entertainment: "🎬",
-    "Health Care": "💊",
-    Other: "📦",
+    "Food & Dining": "\u{1F354}",
+    Transport: "\u{1F695}",
+    Shopping: "\u{1F6CD}\uFE0F",
+    "Bills & Utilities": "\u{1F4A1}",
+    Entertainment: "\u{1F3AC}",
+    "Health Care": "\u{1F48A}",
+    Other: "\u{1F4E6}",
   };
 
-  return icons[category] || "📦";
+  return icons[category] || "\u{1F4E6}";
+}
+
+function exportExpensesToCSV(expenses, currency = "INR") {
+  if (!expenses || expenses.length === 0) {
+    alert("No expenses recorded to export.");
+    return;
+  }
+
+  const headers = [
+    "ID",
+    "Merchant",
+    "Amount",
+    "Currency",
+    "Date",
+    "Category",
+    "Payment Method",
+    "AI Confidence",
+    "Notes",
+  ];
+
+  const rows = expenses.map((e) => [
+    e.id,
+    `"${String(e.merchant || "").replace(/"/g, '""')}"`,
+    e.amount,
+    currency,
+    e.date,
+    `"${String(e.category || "").replace(/"/g, '""')}"`,
+    `"${String(e.payment || "").replace(/"/g, '""')}"`,
+    `${e.confidence || 0}%`,
+    `"${String(e.notes || "").replace(/"/g, '""')}"`,
+  ]);
+
+  const csvContent = [headers.join(","), ...rows.map((r) => r.join(","))].join("\n");
+  const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.setAttribute("href", url);
+  link.setAttribute("download", `spendai_expenses_${new Date().toISOString().slice(0, 10)}.csv`);
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+}
+
+function computeAnalyticsData(expenses, range) {
+  const today = new Date();
+  today.setHours(23, 59, 59, 999);
+
+  const parseExpenseDate = (exp) => {
+    if (!exp.date) return null;
+    const d = new Date(String(exp.date).slice(0, 10) + "T00:00:00");
+    return Number.isNaN(d.getTime()) ? null : d;
+  };
+
+  if (range === "weekly") {
+    // Last 4 weekly buckets ending at today
+    const buckets = [];
+    for (let i = 3; i >= 0; i--) {
+      const end = new Date(today.getTime() - i * 7 * 24 * 60 * 60 * 1000);
+      const start = new Date(end.getTime() - 7 * 24 * 60 * 60 * 1000);
+      start.setHours(0, 0, 0, 0);
+
+      const label = `W${4 - i}`;
+      const dateRangeLabel = `${start.toLocaleDateString("en-IN", {
+        month: "short",
+        day: "numeric",
+      })} - ${end.toLocaleDateString("en-IN", {
+        month: "short",
+        day: "numeric",
+      })}`;
+
+      const bucketExpenses = expenses.filter((e) => {
+        const d = parseExpenseDate(e);
+        return d && d >= start && d <= end;
+      });
+
+      const value = bucketExpenses.reduce((sum, e) => sum + e.amount, 0);
+      buckets.push({
+        label,
+        dateRangeLabel,
+        value,
+        expenses: bucketExpenses,
+        start,
+        end,
+      });
+    }
+
+    const rangeStart = buckets[0].start;
+    const rangeEnd = buckets[buckets.length - 1].end;
+    const rangeExpenses = expenses.filter((e) => {
+      const d = parseExpenseDate(e);
+      return d && d >= rangeStart && d <= rangeEnd;
+    });
+
+    const total = buckets.reduce((sum, b) => sum + b.value, 0);
+    return {
+      chartData: buckets,
+      rangeExpenses,
+      rangeTotal: total,
+      rangeLabel: `Last 4 weeks (${buckets[0].dateRangeLabel.split("-")[0].trim()} - Today)`,
+      periodSubtitle: "Past 4 weeks",
+    };
+  }
+
+  if (range === "yearly") {
+    const currentYear = today.getFullYear();
+    const buckets = [];
+    for (let y = currentYear - 4; y <= currentYear; y++) {
+      const start = new Date(y, 0, 1, 0, 0, 0);
+      const end = new Date(y, 11, 31, 23, 59, 59);
+      const label = String(y);
+
+      const bucketExpenses = expenses.filter((e) => {
+        const d = parseExpenseDate(e);
+        return d && d >= start && d <= end;
+      });
+
+      const value = bucketExpenses.reduce((sum, e) => sum + e.amount, 0);
+      buckets.push({
+        label,
+        dateRangeLabel: String(y),
+        value,
+        expenses: bucketExpenses,
+        start,
+        end,
+      });
+    }
+
+    const rangeStart = buckets[0].start;
+    const rangeEnd = buckets[buckets.length - 1].end;
+    const rangeExpenses = expenses.filter((e) => {
+      const d = parseExpenseDate(e);
+      return d && d >= rangeStart && d <= rangeEnd;
+    });
+
+    const total = buckets.reduce((sum, b) => sum + b.value, 0);
+    return {
+      chartData: buckets,
+      rangeExpenses,
+      rangeTotal: total,
+      rangeLabel: `Last 5 years (${currentYear - 4} - ${currentYear})`,
+      periodSubtitle: `${currentYear - 4} - ${currentYear}`,
+    };
+  }
+
+  // Monthly: Last 6 calendar months
+  const buckets = [];
+  for (let i = 5; i >= 0; i--) {
+    const start = new Date(today.getFullYear(), today.getMonth() - i, 1, 0, 0, 0);
+    const end = new Date(today.getFullYear(), today.getMonth() - i + 1, 0, 23, 59, 59);
+    const label = start.toLocaleDateString("en-IN", { month: "short" });
+    const dateRangeLabel = start.toLocaleDateString("en-IN", {
+      month: "short",
+      year: "numeric",
+    });
+
+    const bucketExpenses = expenses.filter((e) => {
+      const d = parseExpenseDate(e);
+      return d && d >= start && d <= end;
+    });
+
+    const value = bucketExpenses.reduce((sum, e) => sum + e.amount, 0);
+    buckets.push({
+      label,
+      dateRangeLabel,
+      value,
+      expenses: bucketExpenses,
+      start,
+      end,
+    });
+  }
+
+  const rangeStart = buckets[0].start;
+  const rangeEnd = buckets[buckets.length - 1].end;
+  const rangeExpenses = expenses.filter((e) => {
+    const d = parseExpenseDate(e);
+    return d && d >= rangeStart && d <= rangeEnd;
+  });
+
+  const total = buckets.reduce((sum, b) => sum + b.value, 0);
+  return {
+    chartData: buckets,
+    rangeExpenses,
+    rangeTotal: total,
+    rangeLabel: "Last 6 months",
+    periodSubtitle: buckets[buckets.length - 1].dateRangeLabel,
+  };
 }
 
 function App() {
@@ -193,6 +441,26 @@ function App() {
   const [analyticsRange, setAnalyticsRange] = useState("monthly");
 
   useEffect(() => {
+    localStorage.removeItem("spendai_token");
+  }, []);
+
+  const [currency, setCurrency] = useState(() => {
+    return "INR";
+  });
+
+  const [showConfidence, setShowConfidence] = useState(() => {
+    return localStorage.getItem("spendai_show_confidence") !== "false";
+  });
+
+  useEffect(() => {
+    localStorage.setItem("spendai_currency", currency);
+  }, [currency]);
+
+  useEffect(() => {
+    localStorage.setItem("spendai_show_confidence", String(showConfidence));
+  }, [showConfidence]);
+
+  useEffect(() => {
     if (!isAuthenticated || !currentUser?.email) {
       setExpenses([]);
       return undefined;
@@ -204,9 +472,13 @@ function App() {
     async function loadExpenses() {
       try {
         const response = await fetch(`${API_BASE_URL}/expenses`, {
-          headers: { "X-User-Email": currentUser.email.trim().toLowerCase() },
+          credentials: "include",
           signal: controller.signal,
         });
+        if (response.status === 401) {
+          handleLogout();
+          return;
+        }
         if (!response.ok) throw new Error("Failed to load expenses");
         const data = await response.json();
         if (Array.isArray(data)) {
@@ -227,13 +499,16 @@ function App() {
 
     loadExpenses();
 
-    return () => controller.abort();
-  }, [isAuthenticated, currentUser?.email]);
+    return () => {
+      controller.abort();
+    };
+  }, [currentUser?.email, isAuthenticated]);
 
   const emptyForm = {
     merchant: "",
     amount: "",
-    date: new Date().toISOString().split("T")[0],
+    date: localDateInputValue(),
+    category: "Other",
     payment: "UPI",
   };
 
@@ -253,27 +528,134 @@ function App() {
       merchant: expense.merchant,
       amount: String(expense.amount),
       date: expense.date,
+      category: expense.category || "Other",
       payment: expense.payment || "UPI",
     });
     setShowModal(true);
   }
 
-  const aiPrediction = useMemo(() => {
-    return predictCategory({
-      merchant: form.merchant,
-      amount: form.amount,
-    });
-  }, [form.merchant, form.amount]);
+  const [aiPrediction, setAiPrediction] = useState({
+    category: "Other",
+    confidence: 0,
+    source: "unavailable",
+    reasoning: "",
+    isPending: true,
+    icon: "✨",
+    color: "#9aa4b2",
+    error: "",
+  });
+
+  useEffect(() => {
+    if (!showModal || !form.merchant.trim() || form.merchant.trim().length < 2) {
+      setAiPrediction((previous) => ({
+        ...previous,
+        isPending: true,
+        error: "",
+      }));
+      return undefined;
+    }
+
+    let active = true;
+    setAiPrediction((previous) => ({ ...previous, isPending: true, error: "" }));
+    const timeout = setTimeout(() => {
+      predictCategory({
+        merchant: form.merchant.trim(),
+        amount: form.amount || 0,
+        payment_method: form.payment,
+      }).then((prediction) => {
+        if (active && prediction) {
+          setAiPrediction(prediction);
+          // Auto-select category if form category is currently default "Other"
+          setForm((current) => (current.category === "Other" && prediction.category ? { ...current, category: prediction.category } : current));
+        }
+      }).catch((error) => {
+        if (active) {
+          setAiPrediction((previous) => ({
+            ...previous,
+            isPending: false,
+            error: error.message,
+          }));
+        }
+      });
+    }, 750);
+
+    return () => {
+      active = false;
+      clearTimeout(timeout);
+    };
+  }, [showModal, form.merchant, form.amount, form.payment]);
 
   const totalSpent = useMemo(
     () => expenses.reduce((sum, expense) => sum + expense.amount, 0),
     [expenses]
   );
 
-  const transactionCount = expenses.length;
+  const dashboardMetrics = useMemo(() => {
+    const now = new Date();
+    const currentMonthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+    const nextMonthStart = new Date(now.getFullYear(), now.getMonth() + 1, 1);
+    const previousMonthStart = new Date(now.getFullYear(), now.getMonth() - 1, 1);
 
-  const averageExpense =
-    transactionCount > 0 ? totalSpent / transactionCount : 0;
+    const currentMonthExpenses = expenses.filter((expense) => {
+      const date = parseLocalDateOnly(expense.date);
+      return date && date >= currentMonthStart && date < nextMonthStart;
+    });
+    const previousMonthExpenses = expenses.filter((expense) => {
+      const date = parseLocalDateOnly(expense.date);
+      return date && date >= previousMonthStart && date < currentMonthStart;
+    });
+    const summarize = (periodExpenses) => {
+      const total = periodExpenses.reduce(
+        (sum, expense) => sum + expense.amount,
+        0
+      );
+      return {
+        total,
+        count: periodExpenses.length,
+        average: periodExpenses.length ? total / periodExpenses.length : 0,
+      };
+    };
+    const current = summarize(currentMonthExpenses);
+    const previous = summarize(previousMonthExpenses);
+    const getTrend = (currentValue, previousValue, lowerIsBetter = false) => {
+      if (previousValue === 0) {
+        return { label: "No prior data", positive: undefined };
+      }
+      const percentageChange =
+        ((currentValue - previousValue) / previousValue) * 100;
+      const sign = percentageChange > 0 ? "+" : "";
+      return {
+        label: `${sign}${percentageChange.toFixed(1)}%`,
+        positive:
+          percentageChange === 0 ||
+          (lowerIsBetter ? percentageChange < 0 : percentageChange > 0),
+      };
+    };
+    const scoredExpenses = expenses.filter(
+      (expense) =>
+        typeof expense.confidence === "number" && expense.confidence > 0
+    );
+    const ruleBasedAverage = scoredExpenses.length
+      ? scoredExpenses.reduce(
+          (sum, expense) => sum + expense.confidence,
+          0
+        ) / scoredExpenses.length
+      : null;
+
+    return {
+      current,
+      totalTrend: getTrend(current.total, previous.total, true),
+      transactionTrend: getTrend(current.count, previous.count),
+      averageTrend: getTrend(current.average, previous.average, true),
+      ruleBasedScore:
+        ruleBasedAverage === null ? "N/A" : `${ruleBasedAverage.toFixed(1)}%`,
+      scoredExpenseCount: scoredExpenses.length,
+      currentMonthLabel: now.toLocaleDateString("en-IN", {
+        month: "long",
+        year: "numeric",
+      }),
+    };
+  }, [expenses]);
 
   const filteredExpenses = useMemo(() => {
     return expenses.filter((expense) => {
@@ -308,49 +690,77 @@ function App() {
   }, [expenses, totalSpent]);
 
   const monthlyData = useMemo(() => {
-    const baseMonthlyValues = [
-      { month: "Apr", value: 4800 },
-      { month: "May", value: 6100 },
-      { month: "Jun", value: 5400 },
-      { month: "Jul", value: 7200 },
-      { month: "Aug", value: 6800 },
-      { month: "Sep", value: totalSpent },
-    ];
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+
+    const sumExpensesBetween = (start, end) =>
+      expenses.reduce((sum, expense) => {
+        const date = parseLocalDateOnly(expense.date);
+        return date && date >= start && date < end
+          ? sum + expense.amount
+          : sum;
+      }, 0);
 
     if (dashboardRange === "1") {
-      return [
-        { month: "W1", value: Math.max(1200, totalSpent * 0.22) },
-        { month: "W2", value: Math.max(1400, totalSpent * 0.28) },
-        { month: "W3", value: Math.max(1300, totalSpent * 0.25) },
-        { month: "W4", value: Math.max(1500, totalSpent * 0.3) },
-      ];
+      return Array.from({ length: 7 }, (_, index) => {
+        const start = new Date(today);
+        start.setDate(today.getDate() - 6 + index);
+        const end = new Date(start);
+        end.setDate(start.getDate() + 1);
+
+        return {
+          month: start.toLocaleDateString("en-IN", { weekday: "short" }),
+          value: sumExpensesBetween(start, end),
+        };
+      });
     }
 
     if (dashboardRange === "2") {
-      return [
-        { month: "W1", value: Math.max(1500, totalSpent * 0.2) },
-        { month: "W2", value: Math.max(1900, totalSpent * 0.28) },
-        { month: "W3", value: Math.max(1700, totalSpent * 0.26) },
-        { month: "W4", value: Math.max(2100, totalSpent * 0.32) },
-      ];
+      const firstDay = new Date(today);
+      firstDay.setDate(today.getDate() - 27);
+
+      return Array.from({ length: 4 }, (_, index) => {
+        const start = new Date(firstDay);
+        start.setDate(firstDay.getDate() + index * 7);
+        const end = new Date(start);
+        end.setDate(start.getDate() + 7);
+
+        return {
+          month: `W${index + 1}`,
+          value: sumExpensesBetween(start, end),
+        };
+      });
     }
 
-    if (dashboardRange === "12") {
-      return [
-        { month: "Jan", value: 3400 },
-        { month: "Feb", value: 4200 },
-        { month: "Mar", value: 3900 },
-        { month: "Apr", value: 4800 },
-        { month: "May", value: 6100 },
-        { month: "Jun", value: 5400 },
-        { month: "Jul", value: 7200 },
-        { month: "Aug", value: 6800 },
-        { month: "Sep", value: totalSpent },
-      ];
-    }
+    const monthCount = dashboardRange === "6" ? 6 : 12;
+    const firstMonth = new Date(
+      today.getFullYear(),
+      today.getMonth() - monthCount + 1,
+      1
+    );
 
-    return baseMonthlyValues;
-  }, [dashboardRange, totalSpent]);
+    return Array.from({ length: monthCount }, (_, index) => {
+      const start = new Date(
+        firstMonth.getFullYear(),
+        firstMonth.getMonth() + index,
+        1
+      );
+      const end = new Date(start.getFullYear(), start.getMonth() + 1, 1);
+
+      return {
+        month: start.toLocaleDateString("en-IN", { month: "short" }),
+        value: sumExpensesBetween(start, end),
+      };
+    });
+  }, [dashboardRange, expenses]);
+  const maxChartValue = Math.max(
+    ...monthlyData.map((item) => item.value),
+    0
+  );
+  const chartScaleStep = 10 ** Math.floor(Math.log10(maxChartValue || 1));
+  const chartScaleMax = maxChartValue
+    ? Math.ceil(maxChartValue / chartScaleStep) * chartScaleStep
+    : 0;
 
   function handleInputChange(event) {
     const { name, value } = event.target;
@@ -366,19 +776,38 @@ function App() {
 
     if (!form.merchant.trim() || !form.amount) return;
 
-    const prediction = predictCategory({
-      merchant: form.merchant,
-      amount: form.amount,
-    });
+    // Use current AI prediction if valid, or fall back to form category
+    let categoryToSave = form.category;
+    let confidenceToSave = 0;
+
+    if (aiPrediction && !aiPrediction.isPending && aiPrediction.category && !aiPrediction.error) {
+      if (!categoryToSave || categoryToSave === "Other") {
+        categoryToSave = aiPrediction.category;
+      }
+      confidenceToSave = aiPrediction.confidence;
+    } else if (!categoryToSave || categoryToSave === "Other") {
+      try {
+        const fallback = await predictCategory({
+          merchant: form.merchant.trim(),
+          amount: form.amount,
+          payment_method: form.payment,
+        });
+        if (fallback?.category) {
+          categoryToSave = fallback.category;
+          confidenceToSave = fallback.confidence;
+        }
+      } catch (e) {
+        console.warn("Using default category on save:", e);
+      }
+    }
 
     const payload = {
       merchant: form.merchant.trim(),
       amount: Number(form.amount),
       date: form.date,
-      category: prediction.category,
+      category: categoryToSave || "Other",
       payment: form.payment,
-      confidence: prediction.confidence,
-      notes: "Added via SpendAI app",
+      confidence: confidenceToSave,
     };
 
     const endpoint = isEditMode && editingExpenseId
@@ -389,10 +818,8 @@ function App() {
     try {
       const response = await fetch(endpoint, {
         method,
-        headers: {
-          "Content-Type": "application/json",
-          "X-User-Email": currentUser.email.trim().toLowerCase(),
-        },
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
         body: JSON.stringify(payload),
       });
 
@@ -417,20 +844,9 @@ function App() {
         return [normalizedExpense, ...previous];
       });
     } catch (error) {
-      console.warn("Could not save to backend. Saving locally instead.", error);
-      const localExpense = {
-        id: isEditMode && editingExpenseId ? editingExpenseId : Date.now(),
-        ...payload,
-      };
-
-      setExpenses((previous) => {
-        if (isEditMode && editingExpenseId) {
-          return previous.map((expense) =>
-            expense.id === editingExpenseId ? localExpense : expense
-          );
-        }
-        return [localExpense, ...previous];
-      });
+      console.error("Could not save expense to the backend:", error);
+      window.alert("Could not save this expense. Check your connection and try again.");
+      return;
     }
 
     setForm(emptyForm);
@@ -448,9 +864,7 @@ function App() {
     try {
       const response = await fetch(`${API_BASE_URL}/expenses/${expenseId}`, {
         method: "DELETE",
-        headers: {
-          "X-User-Email": currentUser.email.trim().toLowerCase(),
-        },
+        credentials: "include",
       });
 
       if (!response.ok) {
@@ -459,8 +873,8 @@ function App() {
 
       setExpenses((previous) => previous.filter((expense) => expense.id !== expenseId));
     } catch (error) {
-      console.warn("Could not delete from backend. Removing locally instead.", error);
-      setExpenses((previous) => previous.filter((expense) => expense.id !== expenseId));
+      console.error("Could not delete expense from the backend:", error);
+      window.alert("Could not delete this expense. Check your connection and try again.");
     }
   }
 
@@ -487,6 +901,18 @@ function App() {
     setIsAuthenticated(false);
     localStorage.removeItem("spendai_authenticated");
     localStorage.removeItem("spendai_user");
+    localStorage.removeItem("spendai_token");
+
+    fetch(`${API_BASE_URL}/auth/logout`, {
+      method: "POST",
+      credentials: "include",
+    }).then((response) => {
+      if (!response.ok) {
+        console.warn("The server could not clear the authentication cookie.");
+      }
+    }).catch((error) => {
+      console.warn("Could not reach the server to clear the authentication cookie:", error);
+    });
   }
 
   if (!isAuthenticated) {
@@ -603,7 +1029,7 @@ function App() {
             <p className="breadcrumb">Workspace / {activePage}</p>
             <h2>
               {activePage === "dashboard"
-                ? `Good morning, ${currentUser?.name ? currentUser.name.split(" ")[0] : "Alex"} 👋`
+                ? `Good morning, ${currentUser?.name ? currentUser.name.split(" ")[0] : "Alex"} \u{1F44B}`
                 : activePage.charAt(0).toUpperCase() + activePage.slice(1)}
             </h2>
           </div>
@@ -611,7 +1037,7 @@ function App() {
           <div className="topbar-actions">
             <div className="date-chip">
               <Icon name="calendar" size={17} />
-              September 2026
+              {dashboardMetrics.currentMonthLabel}
             </div>
 
             <button className="add-btn" onClick={openAddExpenseModal}>
@@ -623,67 +1049,45 @@ function App() {
 
         {activePage === "dashboard" && (
           <>
-            <section className="welcome-banner">
-              <div>
-                <div className="eyebrow">
-                  <span className="pulse"></span>
-                  AI EXPENSE INSIGHTS
-                </div>
-
-                <h3>Your spending, intelligently organized.</h3>
-
-                <p>
-                  Track your expenses and let AI automatically categorize every
-                  transaction.
-                </p>
-              </div>
-
-              <button
-                className="banner-button"
-                onClick={openAddExpenseModal}
-              >
-                <Icon name="plus" size={17} />
-                Add new expense
-              </button>
-            </section>
-
             <section className="stats-grid">
               <StatCard
                 title="Total Spending"
-                value={formatCurrency(totalSpent)}
+                value={formatCurrency(dashboardMetrics.current.total, currency)}
                 subtitle="This month"
-                trend="+12.5%"
-                positive={false}
+                trend={dashboardMetrics.totalTrend.label}
+                positive={dashboardMetrics.totalTrend.positive}
                 icon="wallet"
                 color="purple"
               />
 
               <StatCard
                 title="Transactions"
-                value={transactionCount}
+                value={dashboardMetrics.current.count}
                 subtitle="This month"
-                trend="+8.2%"
-                positive
+                trend={dashboardMetrics.transactionTrend.label}
+                positive={dashboardMetrics.transactionTrend.positive}
                 icon="receipt"
                 color="blue"
               />
 
               <StatCard
                 title="Avg. Expense"
-                value={formatCurrency(averageExpense)}
-                subtitle="Per transaction"
-                trend="-3.4%"
-                positive
+                value={formatCurrency(dashboardMetrics.current.average, currency)}
+                subtitle="This month"
+                trend={dashboardMetrics.averageTrend.label}
+                positive={dashboardMetrics.averageTrend.positive}
                 icon="chart"
                 color="orange"
               />
 
               <StatCard
-                title="AI Accuracy"
-                value="95.4%"
-                subtitle="Categorization"
-                trend="+2.1%"
-                positive
+                title="Categorization confidence"
+                value={dashboardMetrics.ruleBasedScore}
+                subtitle={
+                  dashboardMetrics.scoredExpenseCount
+                    ? "Average score · not measured accuracy"
+                    : "No scored expenses"
+                }
                 icon="sparkles"
                 color="green"
               />
@@ -694,7 +1098,13 @@ function App() {
                 <div className="panel-header">
                   <div>
                     <h3>Spending Overview</h3>
-                    <p>Monthly spending trend</p>
+                    <p>
+                      {dashboardRange === "1"
+                        ? "Daily spending over the last week"
+                        : dashboardRange === "2"
+                          ? "Weekly spending over the last month"
+                          : `Monthly spending over the last ${dashboardRange} months`}
+                    </p>
                   </div>
 
                   <select
@@ -711,11 +1121,14 @@ function App() {
 
                 <div className="chart">
                   <div className="y-axis">
-                    <span>₹8k</span>
-                    <span>₹6k</span>
-                    <span>₹4k</span>
-                    <span>₹2k</span>
-                    <span>₹0</span>
+                    {[4, 3, 2, 1, 0].map((tick) => (
+                      <span key={tick}>
+                        {formatChartAxisValue(
+                          (chartScaleMax * tick) / 4,
+                          currency
+                        )}
+                      </span>
+                    ))}
                   </div>
 
                   <div className="chart-area">
@@ -727,26 +1140,32 @@ function App() {
                       <span></span>
                     </div>
 
+                    {!maxChartValue && (
+                      <p className="chart-empty-state">
+                        Add expenses to see your spending trend
+                      </p>
+                    )}
+
                     <div className="bars">
                       {monthlyData.map((item) => (
                         <div className="bar-column" key={item.month}>
                           <div
                             className="bar"
                             style={{
-                              height: `${Math.max(
-                                12,
-                                (item.value / Math.max(...monthlyData.map((entry) => entry.value), 1)) * 100
-                              )}%`,
+                              height: `${
+                                chartScaleMax
+                                  ? (item.value / chartScaleMax) * 100
+                                  : 0
+                              }%`,
                             }}
                             title={`${item.month}: ${formatCurrency(
-                              item.value
+                              item.value,
+                              currency
                             )}`}
                           >
-                            {(item.month === "Sep" || item.month === "W4" || item.month === "Dec") && (
-                              <span className="bar-tooltip">
-                                {formatCurrency(item.value)}
-                              </span>
-                            )}
+                            <span className="bar-tooltip">
+                              {formatCurrency(item.value, currency)}
+                            </span>
                           </div>
 
                           <span>{item.month}</span>
@@ -794,8 +1213,8 @@ function App() {
                     }}
                   >
                     <div className="donut-center">
-                      <strong>{formatCurrency(totalSpent)}</strong>
-                      <span>Total spend</span>
+                      <strong>{formatCurrency(totalSpent, currency)}</strong>
+                      <span>All time</span>
                     </div>
                   </div>
 
@@ -810,10 +1229,15 @@ function App() {
                             }}
                           ></span>
 
-                          {item.category}
+                          <span className="legend-category">
+                            {item.category}
+                          </span>
                         </div>
 
-                        <strong>{Math.round(item.percentage)}%</strong>
+                        <div className="legend-details">
+                          <span>{formatCurrency(item.total, currency)}</span>
+                          <strong>{Math.round(item.percentage)}%</strong>
+                        </div>
                       </div>
                     ))}
                   </div>
@@ -832,11 +1256,17 @@ function App() {
                   className="text-button"
                   onClick={() => setActivePage("expenses")}
                 >
-                  View all expenses →
+                  View all expenses {"\u2192"}
                 </button>
               </div>
 
-              <ExpenseTable expenses={expenses.slice(0, 5)} onEdit={openEditExpenseModal} onDelete={deleteExpense} />
+              <ExpenseTable
+                expenses={expenses.slice(0, 5)}
+                currency={currency}
+                showConfidence={showConfidence}
+                onEdit={openEditExpenseModal}
+                onDelete={deleteExpense}
+              />
             </section>
           </>
         )}
@@ -920,17 +1350,21 @@ function App() {
                 </div>
               )}
 
-              <ExpenseTable expenses={filteredExpenses} onEdit={openEditExpenseModal} onDelete={deleteExpense} />
+              <ExpenseTable
+                expenses={filteredExpenses}
+                currency={currency}
+                showConfidence={showConfidence}
+                onEdit={openEditExpenseModal}
+                onDelete={deleteExpense}
+              />
             </div>
           </section>
         )}
 
         {activePage === "analytics" && (
           <Analytics
-            totalSpent={totalSpent}
             expenses={expenses}
-            categoryData={categoryData}
-            monthlyData={monthlyData}
+            currency={currency}
             analyticsRange={analyticsRange}
             setAnalyticsRange={setAnalyticsRange}
           />
@@ -941,10 +1375,20 @@ function App() {
             categoryData={categoryData}
             totalSpent={totalSpent}
             expenses={expenses}
+            currency={currency}
           />
         )}
 
-        {activePage === "settings" && <Settings theme={theme} setTheme={setTheme} />}
+        {activePage === "settings" && (
+          <Settings
+            theme={theme}
+            setTheme={setTheme}
+            showConfidence={showConfidence}
+            setShowConfidence={setShowConfidence}
+            currency={currency}
+            setCurrency={setCurrency}
+          />
+        )}
       </main>
 
       {showModal && (
@@ -971,7 +1415,7 @@ function App() {
                 className="close-button"
                 onClick={() => setShowModal(false)}
               >
-                ×
+                {"\u00D7"}
               </button>
             </div>
 
@@ -993,7 +1437,7 @@ function App() {
                   <label>Amount</label>
 
                   <div className="amount-input">
-                    <span>₹</span>
+                    <span>{CURRENCY_CONFIG[currency]?.symbol || CURRENCY_CONFIG.INR.symbol}</span>
                     <input
                       type="number"
                       name="amount"
@@ -1040,7 +1484,15 @@ function App() {
                 <div className="ai-prediction-header">
                   <div className="ai-prediction-badge">
                     <Icon name="sparkles" size={15} />
-                    <span>AI PREDICTED CATEGORY</span>
+                    <span>
+                      {aiPrediction.isPending
+                        ? "AI PREDICTED CATEGORY"
+                        : aiPrediction.source === "gemini"
+                          ? "Gemini AI"
+                          : aiPrediction.source === "heuristic"
+                            ? "Rule-based fallback"
+                            : "Categorization unavailable"}
+                    </span>
                   </div>
 
                   {!aiPrediction.isPending && (
@@ -1057,13 +1509,17 @@ function App() {
                   )}
                 </div>
 
-                {aiPrediction.isPending ? (
+                {aiPrediction.error ? (
+                  <div className="ai-prediction-empty" role="alert">
+                    <p>{aiPrediction.error}</p>
+                  </div>
+                ) : aiPrediction.isPending ? (
                   <div className="ai-prediction-empty">
                     <div className="ai-empty-sparkle">
                       <Icon name="sparkles" size={20} />
                     </div>
                     <p>
-                      Enter expense merchant/description and amount to predict category automatically with AI.
+                      Enter an expense name and amount to predict category automatically with AI.
                     </p>
                   </div>
                 ) : (
@@ -1075,10 +1531,10 @@ function App() {
                         </span>
                         <div>
                           <span className="ai-prediction-label">
-                            AI Predicted Category:
+                            Category:
                           </span>
                           <h4 className="ai-prediction-name">
-                            {aiPrediction.icon} {aiPrediction.category}
+                            {aiPrediction.category}
                           </h4>
                         </div>
                       </div>
@@ -1088,6 +1544,9 @@ function App() {
                         <strong className="ai-confidence-value">
                           {aiPrediction.confidence}%
                         </strong>
+                        <span className="ai-confidence-label">
+                          Not measured classification accuracy
+                        </span>
                       </div>
                     </div>
 
@@ -1153,14 +1612,20 @@ function StatCard({
           <Icon name={icon} size={20} />
         </div>
 
-        <span className={`trend ${positive ? "trend-positive" : ""}`}>
-          {positive ? (
-            <Icon name="arrowDown" size={13} />
-          ) : (
-            <Icon name="arrowUp" size={13} />
-          )}
-          {trend}
-        </span>
+        {trend && (
+          <span
+            className={`trend ${positive ? "trend-positive" : ""}`}
+            title="Compared with the previous calendar month"
+          >
+            {positive !== undefined &&
+              (positive ? (
+                <Icon name="arrowDown" size={13} />
+              ) : (
+                <Icon name="arrowUp" size={13} />
+              ))}
+            {trend}
+          </span>
+        )}
       </div>
 
       <div className="stat-value">{value}</div>
@@ -1170,11 +1635,17 @@ function StatCard({
   );
 }
 
-function ExpenseTable({ expenses, onEdit, onDelete }) {
+function ExpenseTable({
+  expenses,
+  currency = "INR",
+  showConfidence = true,
+  onEdit,
+  onDelete,
+}) {
   if (!expenses.length) {
     return (
       <div className="empty-state">
-        <div className="empty-icon">🔎</div>
+        <div className="empty-icon">{"\u{1F50D}"}</div>
         <h4>No expenses found</h4>
         <p>Try changing your search or filters.</p>
       </div>
@@ -1190,7 +1661,11 @@ function ExpenseTable({ expenses, onEdit, onDelete }) {
             <th>DATE</th>
             <th>CATEGORY</th>
             <th>PAYMENT</th>
-            <th>AI CONFIDENCE</th>
+            {showConfidence && (
+              <th title="Confidence score is not measured classification accuracy">
+                CATEGORIZATION CONFIDENCE
+              </th>
+            )}
             <th className="amount-column">AMOUNT</th>
             <th className="action-column">ACTIONS</th>
           </tr>
@@ -1230,22 +1705,24 @@ function ExpenseTable({ expenses, onEdit, onDelete }) {
 
               <td className="muted-cell">{expense.payment}</td>
 
-              <td>
-                <div className="confidence">
-                  <div className="confidence-bar">
-                    <span
-                      style={{
-                        width: `${expense.confidence}%`,
-                      }}
-                    ></span>
-                  </div>
+              {showConfidence && (
+                <td>
+                  <div className="confidence">
+                    <div className="confidence-bar">
+                      <span
+                        style={{
+                          width: `${expense.confidence}%`,
+                        }}
+                      ></span>
+                    </div>
 
-                  <strong>{expense.confidence}%</strong>
-                </div>
-              </td>
+                    <strong>{expense.confidence}%</strong>
+                  </div>
+                </td>
+              )}
 
               <td className="amount-column">
-                <strong>{formatCurrency(expense.amount)}</strong>
+                <strong>{formatCurrency(expense.amount, currency)}</strong>
               </td>
 
               <td className="action-column">
@@ -1266,68 +1743,543 @@ function ExpenseTable({ expenses, onEdit, onDelete }) {
   );
 }
 
-function Analytics({ totalSpent, expenses, categoryData, monthlyData, analyticsRange, setAnalyticsRange }) {
-  const highestCategory = [...categoryData].sort(
+function Analytics({ expenses, currency, analyticsRange, setAnalyticsRange }) {
+  const currentYear = new Date().getFullYear();
+  const [reportMonth, setReportMonth] = useState(new Date().getMonth());
+  const [reportYear, setReportYear] = useState(currentYear);
+  const [isGeneratingReport, setIsGeneratingReport] = useState(false);
+  const [reportMessage, setReportMessage] = useState("");
+  const [reportError, setReportError] = useState("");
+
+  const reportYears = useMemo(() => {
+    const years = new Set([currentYear]);
+    expenses.forEach((expense) => {
+      const dateValue = String(expense.date || "").slice(0, 10);
+      const date = new Date(`${dateValue}T00:00:00`);
+      if (dateValue && !Number.isNaN(date.getTime())) {
+        years.add(date.getFullYear());
+      }
+    });
+    return [...years].sort((a, b) => b - a);
+  }, [expenses, currentYear]);
+
+  const selectedPeriodExpenses = expenses.filter((expense) => {
+    const dateValue = String(expense.date || "").slice(0, 10);
+    const date = new Date(`${dateValue}T00:00:00`);
+    return (
+      dateValue &&
+      !Number.isNaN(date.getTime()) &&
+      date.getFullYear() === reportYear &&
+      date.getMonth() === reportMonth
+    );
+  });
+  const selectedPeriodTotal = selectedPeriodExpenses.reduce(
+    (sum, expense) => sum + expense.amount,
+    0
+  );
+  const selectedCategoryData = categories
+    .map((category) => {
+      const total = selectedPeriodExpenses
+        .filter((expense) => expense.category === category)
+        .reduce((sum, expense) => sum + expense.amount, 0);
+      return {
+        category,
+        total,
+        percentage: selectedPeriodTotal ? (total / selectedPeriodTotal) * 100 : 0,
+      };
+    })
+    .filter((item) => item.total > 0);
+  const highestCategory = [...selectedCategoryData].sort(
     (a, b) => b.total - a.total
   )[0];
-
-  const largestExpense = [...expenses].sort(
+  const largestExpense = [...selectedPeriodExpenses].sort(
     (a, b) => b.amount - a.amount
   )[0];
 
-  const chartData =
-    analyticsRange === "weekly"
-      ? [
-          { label: "W1", value: 1800 },
-          { label: "W2", value: 2600 },
-          { label: "W3", value: 2100 },
-          { label: "W4", value: 3200 },
-        ]
-      : analyticsRange === "yearly"
-        ? [
-            { label: "2021", value: 32000 },
-            { label: "2022", value: 48000 },
-            { label: "2023", value: 42000 },
-            { label: "2024", value: 56000 },
-            { label: "2025", value: 61000 },
-          ]
-        : monthlyData;
+  const expenseDate = (expense) => {
+    const dateValue = String(expense.date || "").slice(0, 10);
+    const date = new Date(`${dateValue}T00:00:00`);
+    return dateValue && !Number.isNaN(date.getTime()) ? date : null;
+  };
+  const sumBetween = (start, end) =>
+    expenses.reduce((sum, expense) => {
+      const date = expenseDate(expense);
+      return date && date >= start && date < end ? sum + expense.amount : sum;
+    }, 0);
 
+  let chartData;
+  if (analyticsRange === "weekly") {
+    const daysInMonth = new Date(reportYear, reportMonth + 1, 0).getDate();
+    chartData = Array.from({ length: Math.ceil(daysInMonth / 7) }, (_, index) => {
+      const start = new Date(reportYear, reportMonth, index * 7 + 1);
+      const end = new Date(
+        reportYear,
+        reportMonth,
+        Math.min((index + 1) * 7 + 1, daysInMonth + 1)
+      );
+      return { label: `W${index + 1}`, value: sumBetween(start, end) };
+    });
+  } else if (analyticsRange === "yearly") {
+    chartData = Array.from({ length: 5 }, (_, index) => {
+      const year = reportYear - 4 + index;
+      return {
+        label: String(year),
+        value: sumBetween(new Date(year, 0, 1), new Date(year + 1, 0, 1)),
+      };
+    });
+  } else {
+    chartData = Array.from({ length: 6 }, (_, index) => {
+      const date = new Date(reportYear, reportMonth - 5 + index, 1);
+      return {
+        label: MONTH_NAMES[date.getMonth()].slice(0, 3),
+        value: sumBetween(
+          date,
+          new Date(date.getFullYear(), date.getMonth() + 1, 1)
+        ),
+      };
+    });
+  }
+  const chartMaximum = Math.max(...chartData.map((item) => item.value), 0);
   const rangeLabel =
     analyticsRange === "weekly"
-      ? "This month"
+      ? `${MONTH_NAMES[reportMonth]} ${reportYear}`
       : analyticsRange === "yearly"
-        ? "Last 5 years"
-        : "Last 6 months";
+        ? `${reportYear - 4}-${reportYear}`
+        : `6 months through ${MONTH_NAMES[reportMonth]} ${reportYear}`;
+
+  async function downloadReport() {
+    setReportMessage("");
+    setReportError("");
+    if (!selectedPeriodExpenses.length) {
+      setReportMessage("No expenses found for this month.");
+      return;
+    }
+
+    setIsGeneratingReport(true);
+    try {
+      await new Promise((resolve) => window.setTimeout(resolve, 0));
+      const { default: ExcelJS } = await import("exceljs");
+      const rupeeNumberFormat = "\u20B9#,##0.00";
+      const topCategory = [...selectedCategoryData].sort(
+        (a, b) => b.total - a.total
+      )[0];
+      const largest = [...selectedPeriodExpenses].sort(
+        (a, b) => b.amount - a.amount
+      )[0];
+      const workbook = new ExcelJS.Workbook();
+      workbook.creator = "AI Expense Categorizer";
+      workbook.subject = `${MONTH_NAMES[reportMonth]} ${reportYear} expense report`;
+      workbook.created = new Date();
+
+      const worksheet = workbook.addWorksheet("Monthly Expense Report", {
+        views: [{ state: "frozen", ySplit: 12, topLeftCell: "A13", showGridLines: false }],
+        properties: { defaultRowHeight: 20 },
+      });
+      const contentWidth = (values, min, max) =>
+        Math.min(
+          max,
+          Math.max(
+            min,
+            ...values.map((value) => String(value ?? "").length + 3)
+          )
+        );
+      worksheet.columns = [
+        {
+          key: "date",
+          width: contentWidth(["Date", "DD-MM-YYYY"], 12, 14),
+        },
+        {
+          key: "merchant",
+          width: contentWidth(
+            ["Merchant", ...selectedPeriodExpenses.map((expense) => expense.merchant)],
+            15,
+            23
+          ),
+        },
+        {
+          key: "amount",
+          width: contentWidth(
+            [
+              "Amount",
+              ...selectedPeriodExpenses.map((expense) =>
+                formatCurrency(Number(expense.amount) || 0, currency)
+              ),
+            ],
+            14,
+            17
+          ),
+        },
+        {
+          key: "category",
+          width: contentWidth(
+            ["Category", ...selectedPeriodExpenses.map((expense) => expense.category)],
+            15,
+            20
+          ),
+        },
+        {
+          key: "payment",
+          width: contentWidth(
+            ["Payment Method", ...selectedPeriodExpenses.map((expense) => expense.payment)],
+            16,
+            19
+          ),
+        },
+        {
+          key: "confidence",
+          width: contentWidth(
+            ["Confidence (not measured accuracy)", "100%"],
+            15,
+            25
+          ),
+        },
+      ];
+
+      const borderColor = "FFD9DEEA";
+      const thinBorder = {
+        top: { style: "thin", color: { argb: borderColor } },
+        left: { style: "thin", color: { argb: borderColor } },
+        bottom: { style: "thin", color: { argb: borderColor } },
+        right: { style: "thin", color: { argb: borderColor } },
+      };
+      const styleMergedRow = (rowNumber, fill, font) => {
+        const row = worksheet.getRow(rowNumber);
+        for (let column = 1; column <= 6; column += 1) {
+          const cell = row.getCell(column);
+          cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: fill } };
+          cell.font = font;
+          cell.border = thinBorder;
+        }
+      };
+
+      worksheet.mergeCells("A1:F1");
+      worksheet.getCell("A1").value = "AI Expense Categorizer";
+      worksheet.getRow(1).height = 32;
+      styleMergedRow(1, "211A42", {
+        bold: true,
+        size: 18,
+        color: { argb: "FFFFFFFF" },
+      });
+      worksheet.getCell("A1").alignment = { vertical: "middle", horizontal: "center" };
+
+      worksheet.mergeCells("A2:F2");
+      worksheet.getCell("A2").value = "Monthly Expense Report";
+      worksheet.getRow(2).height = 26;
+      styleMergedRow(2, "342A66", {
+        bold: true,
+        size: 13,
+        color: { argb: "FFE8E3FF" },
+      });
+      worksheet.getCell("A2").alignment = { vertical: "middle", horizontal: "center" };
+
+      worksheet.mergeCells("A4:F4");
+      worksheet.getCell("A4").value = "Summary";
+      styleMergedRow(4, "7057E8", {
+        bold: true,
+        size: 11,
+        color: { argb: "FFFFFFFF" },
+      });
+      worksheet.getCell("A4").alignment = { vertical: "middle", horizontal: "left" };
+
+      const summary = [
+        ["Report Period", `${MONTH_NAMES[reportMonth]} ${reportYear}`],
+        ["Total Spending", selectedPeriodTotal],
+        ["Number of Expenses", selectedPeriodExpenses.length],
+        [
+          "Top Category",
+          topCategory
+            ? `${topCategory.category} - ${formatCurrency(topCategory.total, currency)}`
+            : "No data",
+        ],
+        [
+          "Largest Expense",
+          largest
+            ? `${largest.merchant} - ${formatCurrency(largest.amount, currency)}`
+            : "No data",
+        ],
+      ];
+
+      summary.forEach(([label, value], index) => {
+        const rowNumber = index + 5;
+        worksheet.mergeCells(`A${rowNumber}:C${rowNumber}`);
+        worksheet.mergeCells(`D${rowNumber}:F${rowNumber}`);
+        worksheet.getCell(`A${rowNumber}`).value = label;
+        worksheet.getCell(`D${rowNumber}`).value = value;
+        for (let column = 1; column <= 6; column += 1) {
+          const cell = worksheet.getRow(rowNumber).getCell(column);
+          cell.border = thinBorder;
+          cell.fill = {
+            type: "pattern",
+            pattern: "solid",
+            fgColor: { argb: index % 2 ? "FFF4F2FC" : "FFFFFFFF" },
+          };
+        }
+        worksheet.getCell(`A${rowNumber}`).font = { bold: true, color: { argb: "FF344054" } };
+        worksheet.getCell(`D${rowNumber}`).font = { color: { argb: "FF344054" } };
+        worksheet.getCell(`A${rowNumber}`).alignment = {
+          vertical: "middle",
+          horizontal: "left",
+          indent: 1,
+        };
+        worksheet.getCell(`D${rowNumber}`).alignment = {
+          vertical: "middle",
+          horizontal: "left",
+          indent: 1,
+        };
+        if (label === "Total Spending") {
+          worksheet.getCell(`D${rowNumber}`).numFmt = rupeeNumberFormat;
+        }
+      });
+
+      worksheet.mergeCells("A11:F11");
+      worksheet.getCell("A11").value = "Expense Details";
+      styleMergedRow(11, "7057E8", {
+        bold: true,
+        size: 11,
+        color: { argb: "FFFFFFFF" },
+      });
+      worksheet.getCell("A11").alignment = { vertical: "middle", horizontal: "left" };
+
+      const headers = [
+        "Date",
+        "Merchant",
+        "Amount",
+        "Category",
+        "Payment Method",
+        "Confidence (not measured accuracy)",
+      ];
+      const headerRow = worksheet.getRow(12);
+      headerRow.values = headers;
+      headerRow.height = 24;
+      headerRow.eachCell((cell) => {
+        cell.font = { bold: true, color: { argb: "FFFFFFFF" }, size: 10 };
+        cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FF43358C" } };
+        cell.alignment = { vertical: "middle", horizontal: "left" };
+        cell.border = thinBorder;
+      });
+      headerRow.getCell(1).alignment = { vertical: "middle", horizontal: "center" };
+      headerRow.getCell(3).alignment = { vertical: "middle", horizontal: "right" };
+      headerRow.getCell(6).alignment = { vertical: "middle", horizontal: "right" };
+
+      selectedPeriodExpenses.forEach((expense, index) => {
+        const dateValue = String(expense.date || "").slice(0, 10);
+        const date = new Date(`${dateValue}T00:00:00`);
+        const row = worksheet.addRow([
+          date,
+          expense.merchant || "",
+          Number(expense.amount) || 0,
+          expense.category || "",
+          expense.payment || "",
+          (Number(expense.confidence) || 0) / 100,
+        ]);
+        row.height = 22;
+        row.eachCell((cell) => {
+          cell.border = thinBorder;
+          cell.fill = {
+            type: "pattern",
+            pattern: "solid",
+            fgColor: { argb: index % 2 ? "FFF7F8FC" : "FFFFFFFF" },
+          };
+          cell.alignment = { vertical: "middle" };
+        });
+        row.getCell(1).alignment = { vertical: "middle", horizontal: "center" };
+        row.getCell(3).alignment = { vertical: "middle", horizontal: "right" };
+        row.getCell(6).alignment = { vertical: "middle", horizontal: "right" };
+        row.getCell(1).numFmt = "dd-mm-yyyy";
+        row.getCell(3).numFmt = rupeeNumberFormat;
+        row.getCell(6).numFmt = "0%";
+      });
+
+      const lastExpenseRow = 12 + selectedPeriodExpenses.length;
+      worksheet.autoFilter = {
+        from: { row: 12, column: 1 },
+        to: { row: lastExpenseRow, column: 6 },
+      };
+
+      const categoryTitleRow = lastExpenseRow + 2;
+      worksheet.mergeCells(`A${categoryTitleRow}:F${categoryTitleRow}`);
+      worksheet.getCell(`A${categoryTitleRow}`).value = "Category Summary";
+      for (let column = 1; column <= 6; column += 1) {
+        const cell = worksheet.getRow(categoryTitleRow).getCell(column);
+        cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FF7057E8" } };
+        cell.font = { bold: true, size: 11, color: { argb: "FFFFFFFF" } };
+        cell.border = thinBorder;
+      }
+
+      const categoryHeaderRow = categoryTitleRow + 1;
+      const categoryHeaders = ["Category", "Total Amount", "Percentage"];
+      const categoryRow = worksheet.getRow(categoryHeaderRow);
+      worksheet.mergeCells(`A${categoryHeaderRow}:B${categoryHeaderRow}`);
+      worksheet.mergeCells(`C${categoryHeaderRow}:D${categoryHeaderRow}`);
+      worksheet.mergeCells(`E${categoryHeaderRow}:F${categoryHeaderRow}`);
+      categoryHeaders.forEach((header, index) => {
+        categoryRow.getCell(index * 2 + 1).value = header;
+      });
+      categoryRow.height = 23;
+      for (let column = 1; column <= 6; column += 1) {
+        const cell = categoryRow.getCell(column);
+        cell.font = { bold: true, color: { argb: "FFFFFFFF" } };
+        cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FF43358C" } };
+        cell.border = thinBorder;
+      }
+      categoryRow.getCell(1).alignment = { vertical: "middle", horizontal: "left" };
+      categoryRow.getCell(3).alignment = { vertical: "middle", horizontal: "right" };
+      categoryRow.getCell(5).alignment = { vertical: "middle", horizontal: "right" };
+
+      selectedCategoryData.forEach((item, index) => {
+        const row = worksheet.addRow([]);
+        const rowNumber = row.number;
+        worksheet.mergeCells(`A${rowNumber}:B${rowNumber}`);
+        worksheet.mergeCells(`C${rowNumber}:D${rowNumber}`);
+        worksheet.mergeCells(`E${rowNumber}:F${rowNumber}`);
+        row.getCell(1).value = item.category;
+        row.getCell(3).value = item.total;
+        row.getCell(5).value = item.percentage / 100;
+        for (let column = 1; column <= 6; column += 1) {
+          const cell = row.getCell(column);
+          cell.border = thinBorder;
+          cell.fill = {
+            type: "pattern",
+            pattern: "solid",
+            fgColor: { argb: index % 2 ? "FFF7F8FC" : "FFFFFFFF" },
+          };
+        }
+        row.getCell(1).alignment = { vertical: "middle", horizontal: "left", indent: 1 };
+        row.getCell(3).alignment = { vertical: "middle", horizontal: "right" };
+        row.getCell(5).alignment = { vertical: "middle", horizontal: "right" };
+        row.getCell(3).numFmt = rupeeNumberFormat;
+        row.getCell(5).numFmt = "0.0%";
+      });
+
+      const generatedRow = categoryHeaderRow + selectedCategoryData.length + 2;
+      worksheet.mergeCells(`A${generatedRow}:F${generatedRow}`);
+      worksheet.getCell(`A${generatedRow}`).value =
+        `Report Generated: ${new Date().toLocaleString("en-IN")}`;
+      worksheet.getCell(`A${generatedRow}`).font = {
+        italic: true,
+        size: 9,
+        color: { argb: "FF667085" },
+      };
+      worksheet.getCell(`A${generatedRow}`).alignment = {
+        vertical: "middle",
+        horizontal: "right",
+        indent: 1,
+      };
+      worksheet.getRow(generatedRow).height = 22;
+      worksheet.pageSetup = {
+        paperSize: 9,
+        orientation: "landscape",
+        fitToPage: true,
+        fitToWidth: 1,
+        fitToHeight: 0,
+        horizontalCentered: true,
+        printArea: `A1:F${generatedRow}`,
+        margins: {
+          left: 0.25,
+          right: 0.25,
+          top: 0.5,
+          bottom: 0.5,
+          header: 0.2,
+          footer: 0.2,
+        },
+      };
+
+      const buffer = await workbook.xlsx.writeBuffer();
+      const url = URL.createObjectURL(
+        new Blob([buffer], {
+          type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        })
+      );
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = `Expense_Report_${MONTH_NAMES[reportMonth]}_${reportYear}.xlsx`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+      setReportMessage("Excel report downloaded.");
+    } catch (error) {
+      console.error("Could not generate the expense report:", error);
+      setReportError("Could not generate the report. Please try again.");
+    } finally {
+      setIsGeneratingReport(false);
+    }
+  }
 
   return (
     <section>
-      <div className="page-heading">
+      <div className="page-heading analytics-page-heading">
         <div>
           <h3>Analytics</h3>
           <p>Understand your spending patterns and financial behavior.</p>
+        </div>
+        <div className="analytics-report-controls">
+          <select
+            className="analytics-report-select"
+            aria-label="Select report month"
+            value={reportMonth}
+            onChange={(event) => {
+              setReportMonth(Number(event.target.value));
+              setReportMessage("");
+              setReportError("");
+            }}
+          >
+            {MONTH_NAMES.map((month, index) => (
+              <option key={month} value={index}>{month}</option>
+            ))}
+          </select>
+          <select
+            className="analytics-report-select analytics-year-select"
+            aria-label="Select report year"
+            value={reportYear}
+            onChange={(event) => {
+              setReportYear(Number(event.target.value));
+              setReportMessage("");
+              setReportError("");
+            }}
+          >
+            {reportYears.map((year) => (
+              <option key={year} value={year}>{year}</option>
+            ))}
+          </select>
+          <button
+            className="analytics-report-button"
+            type="button"
+            onClick={downloadReport}
+            disabled={isGeneratingReport}
+          >
+            <Icon name="download" size={15} />
+            {isGeneratingReport ? "Preparing..." : "Download Report"}
+          </button>
+          {(reportMessage || reportError) && (
+            <p
+              className={`analytics-report-status ${reportError ? "error" : ""}`}
+              role={reportError ? "alert" : "status"}
+            >
+              {reportError || reportMessage}
+            </p>
+          )}
+          {!reportMessage && !reportError && !selectedPeriodExpenses.length && (
+            <p className="analytics-report-status" role="status">
+              No expenses found for this month.
+            </p>
+          )}
         </div>
       </div>
 
       <div className="analytics-highlight-grid">
         <div className="analytics-highlight">
-          <span>{analyticsRange === "weekly" ? "Weekly spending" : analyticsRange === "yearly" ? "Yearly spending" : "Monthly spending"}</span>
-          <strong>{formatCurrency(totalSpent)}</strong>
-          <small>
-            {analyticsRange === "weekly"
-              ? "Current week"
-              : analyticsRange === "yearly"
-                ? "2025"
-                : "September 2026"}
-          </small>
+          <span>Monthly spending</span>
+          <strong>{formatCurrency(selectedPeriodTotal, currency)}</strong>
+          <small>{MONTH_NAMES[reportMonth]} {reportYear}</small>
         </div>
 
         <div className="analytics-highlight">
           <span>Top category</span>
-          <strong>{highestCategory?.category || "—"}</strong>
+          <strong>{highestCategory?.category || "\u2014"}</strong>
           <small>
             {highestCategory
-              ? formatCurrency(highestCategory.total)
+              ? formatCurrency(highestCategory.total, currency)
               : "No data"}
           </small>
         </div>
@@ -1335,7 +2287,7 @@ function Analytics({ totalSpent, expenses, categoryData, monthlyData, analyticsR
         <div className="analytics-highlight">
           <span>Largest expense</span>
           <strong>
-            {largestExpense ? formatCurrency(largestExpense.amount) : "—"}
+            {largestExpense ? formatCurrency(largestExpense.amount, currency) : "\u2014"}
           </strong>
           <small>{largestExpense?.merchant || "No data"}</small>
         </div>
@@ -1373,15 +2325,14 @@ function Analytics({ totalSpent, expenses, categoryData, monthlyData, analyticsR
             {chartData.map((item) => (
               <div className="large-bar-column" key={item.label || item.month}>
                 <span className="large-value">
-                  {analyticsRange === "yearly"
-                    ? `₹${Math.round(item.value / 1000)}k`
-                    : `₹${Math.round(item.value / 100) / 10}k`}
+                  {formatChartAxisValue(item.value, currency)}
                 </span>
 
                 <div
                   className="large-bar"
                   style={{
-                    height: `${Math.max(15, (item.value / (analyticsRange === "yearly" ? 70000 : 8000)) * 100)}%`,
+                    height: `${chartMaximum ? Math.max(8, (item.value / chartMaximum) * 100) : 0}%`,
+                    minHeight: chartMaximum && item.value ? 14 : 0,
                   }}
                 ></div>
 
@@ -1400,21 +2351,15 @@ function Analytics({ totalSpent, expenses, categoryData, monthlyData, analyticsR
           </div>
 
           <div className="analytics-category-list">
-            {categoryData.map((item) => (
+            {selectedCategoryData.map((item) => (
               <div className="analytics-category" key={item.category}>
                 <div className="analytics-category-top">
                   <span>
-                    <i
-                      style={{
-                        background: categoryColors[item.category],
-                      }}
-                    ></i>
+                    <i style={{ background: categoryColors[item.category] }}></i>
                     {item.category}
                   </span>
-
-                  <strong>{formatCurrency(item.total)}</strong>
+                  <strong>{formatCurrency(item.total, currency)}</strong>
                 </div>
-
                 <div className="progress-track">
                   <span
                     style={{
@@ -1423,7 +2368,6 @@ function Analytics({ totalSpent, expenses, categoryData, monthlyData, analyticsR
                     }}
                   ></span>
                 </div>
-
                 <small>{Math.round(item.percentage)}% of spending</small>
               </div>
             ))}
@@ -1434,7 +2378,7 @@ function Analytics({ totalSpent, expenses, categoryData, monthlyData, analyticsR
   );
 }
 
-function Categories({ categoryData, totalSpent, expenses }) {
+function Categories({ categoryData, totalSpent, expenses, currency }) {
   return (
     <section>
       <div className="page-heading">
@@ -1472,7 +2416,7 @@ function Categories({ categoryData, totalSpent, expenses }) {
 
               <h4>{category}</h4>
 
-              <strong>{formatCurrency(total)}</strong>
+              <strong>{formatCurrency(total, currency)}</strong>
 
               <div className="category-card-footer">
                 <span>{count} transactions</span>
@@ -1495,7 +2439,14 @@ function Categories({ categoryData, totalSpent, expenses }) {
   );
 }
 
-function Settings({ theme, setTheme }) {
+function Settings({
+  theme,
+  setTheme,
+  showConfidence,
+  setShowConfidence,
+  currency,
+  setCurrency,
+}) {
   return (
     <section>
       <div className="page-heading">
@@ -1536,26 +2487,23 @@ function Settings({ theme, setTheme }) {
 
         <div className="settings-row">
           <div>
-            <h4>AI Categorization</h4>
-            <p>
-              Automatically classify transactions using your AI model.
-            </p>
+            <h4>Gemini AI Categorization</h4>
+            <p>Gemini AI is used when available; otherwise rule-based categorization is used.</p>
           </div>
-
-          <label className="switch">
-            <input type="checkbox" defaultChecked />
-            <span></span>
-          </label>
         </div>
 
         <div className="settings-row">
           <div>
             <h4>Confidence indicators</h4>
-            <p>Show AI confidence scores in your expense table.</p>
+            <p>Show categorization confidence scores; they are not measured classification accuracy.</p>
           </div>
 
           <label className="switch">
-            <input type="checkbox" defaultChecked />
+            <input
+              type="checkbox"
+              checked={showConfidence}
+              onChange={(event) => setShowConfidence(event.target.checked)}
+            />
             <span></span>
           </label>
         </div>
@@ -1563,13 +2511,19 @@ function Settings({ theme, setTheme }) {
         <div className="settings-row">
           <div>
             <h4>Currency</h4>
-            <p>Default currency for your expenses.</p>
+            <p>Expenses are stored and displayed in INR; currency conversion is not supported.</p>
           </div>
 
-          <select className="settings-select">
-            <option>Indian Rupee (₹)</option>
-            <option>US Dollar ($)</option>
-            <option>Euro (€)</option>
+          <select
+            className="settings-select"
+            value={currency}
+            onChange={(event) => setCurrency(event.target.value)}
+          >
+            {Object.values(CURRENCY_CONFIG).map((option) => (
+              <option key={option.code} value={option.code}>
+                {option.name}
+              </option>
+            ))}
           </select>
         </div>
       </div>
