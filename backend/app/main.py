@@ -622,3 +622,16 @@ def delete_expense(
     db.delete(expense)
     db.commit()
     return {"message": "Expense deleted successfully"}
+
+from fastapi.staticfiles import StaticFiles
+import os
+
+# backend/app/main.py -> go up 3 levels to reach project root
+dist_path = os.path.join(os.path.dirname(__file__), "..", "..", "..", "dist")
+
+if os.path.exists(dist_path):
+    app.mount("/", StaticFiles(directory=dist_path, html=True), name="static")
+else:
+    print(f"Warning: Frontend build directory not found at {dist_path}")
+
+
