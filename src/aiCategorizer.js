@@ -1,5 +1,7 @@
-const API_BASE_URL = import.meta.env?.VITE_API_BASE_URL ||
-  (typeof window === "undefined" ? "http://127.0.0.1:8000" : "/api");
+const API_BASE_URL = (
+  import.meta.env?.VITE_API_BASE_URL ||
+  (typeof window === "undefined" ? "http://127.0.0.1:8000" : "/api")
+).replace(/\/+$/, "");
 
 const CATEGORY_PRESENTATION = {
   Food: { icon: "🍔", color: "#7c5cff" },
@@ -20,9 +22,14 @@ export async function predictCategory({
   payment_method = "",
 }) {
   try {
+    const token = typeof window !== "undefined" ? localStorage.getItem("spendai_token") : null;
+    const headers = {
+      "Content-Type": "application/json",
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    };
     const response = await fetch(`${API_BASE_URL}/predictCategory`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers,
       body: JSON.stringify({ merchant, amount: Number(amount), payment_method }),
     });
     const result = await response.json();

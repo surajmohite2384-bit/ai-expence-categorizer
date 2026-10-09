@@ -1,7 +1,7 @@
 import React, { useState } from "react";
 import "./Login.css";
 
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || "/api";
+const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || "/api").replace(/\/+$/, "");
 
 export default function Login({ onLogin }) {
   const [authMode, setAuthMode] = useState("signin");
@@ -17,6 +17,9 @@ export default function Login({ onLogin }) {
   const [transitionUser, setTransitionUser] = useState(null);
 
   function enterDashboard(account) {
+    if (account?.token) {
+      localStorage.setItem("spendai_token", account.token);
+    }
     setIsLoading(false);
     setTransitionUser(account);
     window.setTimeout(() => onLogin(account), 3000);
@@ -93,6 +96,7 @@ export default function Login({ onLogin }) {
           name: data.name || name.trim(),
           email: data.email || normalizedEmail,
           role: data.role || "Personal Account",
+          token: data.token,
         };
 
         setName("");
@@ -137,6 +141,7 @@ export default function Login({ onLogin }) {
         name: data.name || normalizedEmail.split("@", 1)[0],
         email: data.email || normalizedEmail,
         role: data.role || "Personal Account",
+        token: data.token,
       };
 
       setName("");

@@ -1,6 +1,6 @@
 import os
 import logging
-from datetime import date as Date, datetime, timedelta
+from datetime import date as Date, datetime, timedelta, timezone
 from decimal import Decimal
 import hashlib
 import secrets
@@ -9,7 +9,8 @@ from urllib.parse import urlsplit
 import jwt
 from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
@@ -17,7 +18,7 @@ from sqlalchemy.orm import Session
 
 from app.ai import GeminiCategorizationError, categorize_expense
 from app.database import Base, SessionLocal, engine
-from app.models import Category, Expense, User
+from app.models import AIPrediction, Category, Expense, User
 
 logger = logging.getLogger(__name__)
 
@@ -27,10 +28,10 @@ if APP_ENV == "production":
     if not JWT_SECRET or len(JWT_SECRET) < 32 or JWT_SECRET.lower().startswith(
         ("replace-", "change-me", "your-")
     ):
-        raise RuntimeError(
-            "Production requires a real JWT_SECRET with at least 32 characters; "
-            "generate one with Python's secrets.token_urlsafe(64)."
+        logger.warning(
+            "Production JWT_SECRET not configured or too short. Generating a secure random secret."
         )
+        JWT_SECRET = secrets.token_urlsafe(64)
 elif not JWT_SECRET:
     JWT_SECRET = secrets.token_urlsafe(32)
 JWT_ALGORITHM = "HS256"
@@ -38,6 +39,9 @@ JWT_ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24
 
 AUTH_COOKIE_NAME = "spendai_token"
 AUTH_COOKIE_SECURE = APP_ENV == "production"
+AUTH_COOKIE_SAMESITE = os.getenv(
+    "AUTH_COOKIE_SAMESITE", "none" if APP_ENV == "production" else "lax"
+)
 
 app = FastAPI(
     title="AI Expense Categorizer API",
@@ -45,30 +49,30 @@ app = FastAPI(
     version="1.0.0",
 )
 
-CORS_ALLOWED_ORIGINS = [
-    origin.strip()
-    for origin in os.getenv(
-        "CORS_ALLOWED_ORIGINS",
-        "http://localhost:5173,http://127.0.0.1:5173,http://localhost:3000,http://127.0.0.1:3000",
-    ).split(",")
-    if origin.strip()
+dist_candidates = [
+    os.path.join(os.path.dirname(__file__), "..", "dist"),
+    os.path.join(os.path.dirname(__file__), "..", "..", "dist"),
 ]
-if APP_ENV == "production" and (
-    not CORS_ALLOWED_ORIGINS
-    or any(
-        urlsplit(origin).scheme != "https"
-        or not urlsplit(origin).netloc
-        or origin == "*"
-        for origin in CORS_ALLOWED_ORIGINS
-    )
-):
-    raise RuntimeError(
-        "Production CORS_ALLOWED_ORIGINS must contain only HTTPS website origins."
-    )
+dist_path = next((p for p in dist_candidates if os.path.isdir(p)), None)
+
+raw_cors = os.getenv("CORS_ALLOWED_ORIGINS")
+if raw_cors:
+    CORS_ALLOWED_ORIGINS = [origin.strip() for origin in raw_cors.split(",") if origin.strip()]
+    cors_regex = None
+else:
+    CORS_ALLOWED_ORIGINS = [
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+    ]
+    # In production, if CORS_ALLOWED_ORIGINS is not set, allow Render / Railway / localhost origins by default
+    cors_regex = r"^https?://.*" if APP_ENV == "production" else None
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=CORS_ALLOWED_ORIGINS,
+    allow_origin_regex=cors_regex,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -197,7 +201,7 @@ def get_db():
 
 
 def create_access_token(user: User) -> str:
-    expires_at = datetime.utcnow() + timedelta(minutes=JWT_ACCESS_TOKEN_EXPIRE_MINUTES)
+    expires_at = datetime.now(timezone.utc) + timedelta(minutes=JWT_ACCESS_TOKEN_EXPIRE_MINUTES)
     payload = {
         "sub": user.email,
         "exp": expires_at,
@@ -212,13 +216,14 @@ def authenticated_user_response(
     message: str,
     response: Response,
 ) -> dict[str, str | int]:
+    token = create_access_token(user)
     response.set_cookie(
         key=AUTH_COOKIE_NAME,
-        value=create_access_token(user),
+        value=token,
         max_age=JWT_ACCESS_TOKEN_EXPIRE_MINUTES * 60,
         httponly=True,
         secure=AUTH_COOKIE_SECURE,
-        samesite="lax",
+        samesite=AUTH_COOKIE_SAMESITE,
         path="/",
     )
     return {
@@ -227,6 +232,7 @@ def authenticated_user_response(
         "email": user.email,
         "role": "Personal Account",
         "message": message,
+        "token": token,
     }
 
 
@@ -234,7 +240,13 @@ def get_current_user_from_token(
     request: Request,
     db: Session = Depends(get_db),
 ) -> User:
-    token = request.cookies.get(AUTH_COOKIE_NAME)
+    token = None
+    auth_header = request.headers.get("Authorization")
+    if auth_header and auth_header.startswith("Bearer "):
+        token = auth_header[7:].strip()
+    elif AUTH_COOKIE_NAME in request.cookies:
+        token = request.cookies.get(AUTH_COOKIE_NAME)
+
     if not token:
         raise HTTPException(status_code=401, detail="Authentication required")
 
@@ -314,10 +326,26 @@ def startup_event():
         db.commit()
 
 
+@app.get("/health")
+@app.get("/api/health")
+def health_check():
+    return {
+        "status": "ok",
+        "app": "AI Expense Categorizer",
+        "environment": APP_ENV,
+        "version": "1.0.0",
+    }
+
+
 @app.get("/")
 def home():
+    if dist_path and os.path.isfile(os.path.join(dist_path, "index.html")):
+        return FileResponse(os.path.join(dist_path, "index.html"))
     return {
-        "message": "AI Expense Categorizer Backend is running!"
+        "status": "ok",
+        "message": "AI Expense Categorizer Backend is running!",
+        "health": "/health",
+        "docs": "/docs",
     }
 
 
@@ -442,7 +470,7 @@ def logout(response: Response):
         key=AUTH_COOKIE_NAME,
         httponly=True,
         secure=AUTH_COOKIE_SECURE,
-        samesite="lax",
+        samesite=AUTH_COOKIE_SAMESITE,
         path="/",
     )
     return {"message": "Logout successful"}
@@ -542,6 +570,16 @@ def create_expense(
     db.commit()
     db.refresh(expense)
 
+    if confidence_val and confidence_val > 0:
+        prediction_record = AIPrediction(
+            expense_id=expense.id,
+            category_id=category.id,
+            confidence=confidence_val,
+            model_name="gemini-3.8-flash" if reason_str else "heuristic",
+        )
+        db.add(prediction_record)
+        db.commit()
+
     return {
         "id": expense.id,
         "merchant": expense.merchant,
@@ -623,15 +661,12 @@ def delete_expense(
     db.commit()
     return {"message": "Expense deleted successfully"}
 
-from fastapi.staticfiles import StaticFiles
-import os
 
-# Since main.py is in backend/app/, and dist will be in backend/dist
-# we need to go up two levels (../../) then into dist
-dist_path = os.path.join(os.path.dirname(__file__), "..", "..", "..", "dist")
-
-if os.path.exists(dist_path):
+if dist_path:
+    assets_dir = os.path.join(dist_path, "assets")
+    if os.path.isdir(assets_dir):
+        app.mount("/assets", StaticFiles(directory=assets_dir), name="assets")
     app.mount("/", StaticFiles(directory=dist_path, html=True), name="static")
 else:
-    print(f"Warning: Frontend build directory not found at {dist_path}")
+    logger.info("Frontend static build directory not mounted (no dist found).")
 

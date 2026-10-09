@@ -3,7 +3,7 @@ import "./App.css";
 import Login from "./Login.jsx";
 import { predictCategory } from "./aiCategorizer.js";
 
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || "/api";
+const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || "/api").replace(/\/+$/, "");
 
 const categories = [
   "Food",
@@ -440,9 +440,7 @@ function App() {
   const [dashboardRange, setDashboardRange] = useState("1");
   const [analyticsRange, setAnalyticsRange] = useState("monthly");
 
-  useEffect(() => {
-    localStorage.removeItem("spendai_token");
-  }, []);
+  // Clean token handling on session changes
 
   const [currency, setCurrency] = useState(() => {
     return "INR";
@@ -471,7 +469,10 @@ function App() {
 
     async function loadExpenses() {
       try {
+        const token = localStorage.getItem("spendai_token");
+        const headers = token ? { Authorization: `Bearer ${token}` } : {};
         const response = await fetch(`${API_BASE_URL}/expenses`, {
+          headers,
           credentials: "include",
           signal: controller.signal,
         });
@@ -816,9 +817,14 @@ function App() {
     const method = isEditMode && editingExpenseId ? "PUT" : "POST";
 
     try {
+      const token = localStorage.getItem("spendai_token");
+      const headers = {
+        "Content-Type": "application/json",
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      };
       const response = await fetch(endpoint, {
         method,
-        headers: { "Content-Type": "application/json" },
+        headers,
         credentials: "include",
         body: JSON.stringify(payload),
       });
@@ -862,8 +868,11 @@ function App() {
     }
 
     try {
+      const token = localStorage.getItem("spendai_token");
+      const headers = token ? { Authorization: `Bearer ${token}` } : {};
       const response = await fetch(`${API_BASE_URL}/expenses/${expenseId}`, {
         method: "DELETE",
+        headers,
         credentials: "include",
       });
 
@@ -894,6 +903,9 @@ function App() {
     setCurrentUser(account);
     localStorage.setItem("spendai_authenticated", "true");
     localStorage.setItem("spendai_user", JSON.stringify(account));
+    if (userData?.token) {
+      localStorage.setItem("spendai_token", userData.token);
+    }
   }
 
   function handleLogout() {

@@ -1,0 +1,14 @@
+
+services:
+  - type: web
+    name: ai-expense-frontend
+    runtime: static
+    buildCommand: npm install && npm run build
+    staticPublishPath: ./backend/dist
+    routes:
+      - type: rewrite
+        source: /*
+        destination: /index.html
+    envVars:
+      - key: VITE_API_BASE_URL
+        sync: false

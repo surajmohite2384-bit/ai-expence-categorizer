@@ -245,11 +245,11 @@ Rules:
 - reason must be a short explanation
 - return raw JSON only without markdown codeblocks
 """
-
     try:
-        logger.info("Sending expense to Gemini (merchant: %s)...", merchant)
+        gemini_model = os.getenv("GEMINI_MODEL", "gemini-3.8-flash")
+        logger.info("Sending expense to Gemini (merchant: %s, model: %s)...", merchant, gemini_model)
         response = client.models.generate_content(
-            model="gemini-3.8-flash",
+            model=gemini_model,
             contents=prompt,
             config=types.GenerateContentConfig(
                 response_mime_type="application/json"
@@ -295,4 +295,4 @@ Rules:
             error,
         )
         # Never fail or crash: return high-quality heuristic prediction seamlessly!
-        return fallback_result
+        return fallback_result
