@@ -626,12 +626,12 @@ def delete_expense(
 from fastapi.staticfiles import StaticFiles
 import os
 
-# backend/app/main.py -> go up 3 levels to reach project root
+# Since main.py is in backend/app/, and dist will be in backend/dist
+# we need to go up two levels (../../) then into dist
 dist_path = os.path.join(os.path.dirname(__file__), "..", "..", "..", "dist")
 
 if os.path.exists(dist_path):
     app.mount("/", StaticFiles(directory=dist_path, html=True), name="static")
 else:
     print(f"Warning: Frontend build directory not found at {dist_path}")
-
 
