@@ -1,7 +1,6 @@
 import react from '@vitejs/plugin-react'
 import { defineConfig } from 'vite'
 
-// https://vite.dev/config/
 export default defineConfig({
   plugins: [react()],
   server: {
@@ -13,4 +12,9 @@ export default defineConfig({
       },
     },
   },
+  // 👇 ADD THIS SECTION
+  build: {
+    outDir: 'backend/dist',
+    emptyOutDir: true,
+  }
 })
