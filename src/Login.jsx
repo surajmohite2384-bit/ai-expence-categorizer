@@ -1,7 +1,86 @@
-import React, { useState } from "react";
+import { useState } from "react";
 import "./Login.css";
 
 const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || "/api").replace(/\/+$/, "");
+
+function formatFullName(value, preserveTrailingSpace = false) {
+  const endsWithSpace = /\s$/.test(value);
+  const formattedName = value
+    .trim()
+    .replace(/\s+/g, " ")
+    .split(" ")
+    .filter(Boolean)
+    .map((word) => word[0].toUpperCase() + word.slice(1).toLowerCase())
+    .join(" ");
+
+  return preserveTrailingSpace && endsWithSpace && formattedName
+    ? `${formattedName} `
+    : formattedName;
+}
+
+async function readResponseBody(response) {
+  const body = await response.text();
+  if (!body) return { data: {}, text: "" };
+
+  try {
+    return { data: JSON.parse(body), text: "" };
+  } catch {
+    return { data: {}, text: body };
+  }
+}
+
+function authFailureMessage({ data, text, status, action }) {
+  const detail = typeof data?.detail === "string" ? data.detail : "";
+  const serverText = `${detail} ${text}`.slice(0, 500);
+
+  if (/ECONNREFUSED|ECONNRESET|failed to proxy|proxy error|could not connect/i.test(serverText)) {
+    return "SpendAI couldn't reach the backend. Start the FastAPI server and try again.";
+  }
+
+  if (/database (is )?unavailable/i.test(detail) || status === 503) {
+    return "SpendAI's database is unavailable right now. Check the backend database connection and try again.";
+  }
+
+  if (/already exists|duplicate/i.test(detail) || status === 409) {
+    return "An account with this email already exists. Try signing in instead.";
+  }
+
+  if (Array.isArray(data?.detail) && status === 422) {
+    const fields = [...new Set(data.detail
+      .map((issue) => issue?.loc?.at(-1))
+      .filter((field) => ["name", "email", "password"].includes(field)))];
+    if (fields.length) {
+      return `Please check your ${fields.map((field) => (
+        field === "name" ? "full name" : field
+      )).join(", ")} and try again.`;
+    }
+    return "Some of the submitted details are invalid. Please review the form and try again.";
+  }
+
+  if (/full name is required/i.test(detail)) {
+    return "Please enter your full name.";
+  }
+  if (/valid email address is required/i.test(detail)) {
+    return "Please enter a valid email address.";
+  }
+  if (/password must be at least 6 characters/i.test(detail)) {
+    return "Your password must be at least 6 characters.";
+  }
+  if (/password is required/i.test(detail)) {
+    return "Please enter your password.";
+  }
+
+  if (status === 401) {
+    return "We couldn't sign you in. Check your email and password, then try again.";
+  }
+  if (status >= 500) {
+    return `The backend couldn't complete the ${action} request (HTTP ${status}). Check that its database is configured and available, then try again.`;
+  }
+
+  return action === "create your account"
+    ? "We couldn't create your account. Please check your details and try again."
+    : "We couldn't sign you in. Check your email and password, then try again.";
+}
 
 export default function Login({ onLogin }) {
   const [authMode, setAuthMode] = useState("signin");
@@ -10,16 +89,12 @@ export default function Login({ onLogin }) {
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
-  const [rememberMe, setRememberMe] = useState(true);
   const [errors, setErrors] = useState({});
   const [isLoading, setIsLoading] = useState(false);
   const [authMessage, setAuthMessage] = useState("");
   const [transitionUser, setTransitionUser] = useState(null);
 
   function enterDashboard(account) {
-    if (account?.token) {
-      localStorage.setItem("spendai_token", account.token);
-    }
     setIsLoading(false);
     setTransitionUser(account);
     window.setTimeout(() => onLogin(account), 3000);
@@ -64,6 +139,7 @@ export default function Login({ onLogin }) {
 
     setIsLoading(true);
     const normalizedEmail = email.trim().toLowerCase();
+    const formattedName = formatFullName(name);
 
     try {
       if (authMode === "create") {
@@ -72,28 +148,29 @@ export default function Login({ onLogin }) {
           headers: { "Content-Type": "application/json" },
           credentials: "include",
           body: JSON.stringify({
-            name: name.trim(),
+            name: formattedName,
             email: normalizedEmail,
             password,
           }),
         });
 
-        const data = await response.json().catch(() => ({}));
+        const { data, text } = await readResponseBody(response);
 
         if (!response.ok) {
           setIsLoading(false);
-          const errorDetail =
-            data.detail ||
-            data.message ||
-            `Unable to create account (HTTP ${response.status}). Please check the backend server logs.`;
-          setErrors({ email: errorDetail });
-          setAuthMessage(errorDetail);
+          setErrors({});
+          setAuthMessage(authFailureMessage({
+            data,
+            text,
+            status: response.status,
+            action: "create your account",
+          }));
           return;
         }
 
         const createdAccount = {
           id: data.id,
-          name: data.name || name.trim(),
+          name: data.name || formattedName,
           email: data.email || normalizedEmail,
           role: data.role || "Personal Account",
           token: data.token,
@@ -120,19 +197,17 @@ export default function Login({ onLogin }) {
         }),
       });
 
-      const data = await response.json().catch(() => ({}));
+      const { data, text } = await readResponseBody(response);
 
       if (!response.ok) {
         setIsLoading(false);
-        const errorDetail =
-          data.detail ||
-          data.message ||
-          `Sign-in failed (HTTP ${response.status}). Please check the backend server logs.`;
-        setErrors({
-          email: errorDetail,
-          password: "Please check your password.",
-        });
-        setAuthMessage(errorDetail);
+        setErrors({});
+        setAuthMessage(authFailureMessage({
+          data,
+          text,
+          status: response.status,
+          action: "sign in",
+        }));
         return;
       }
 
@@ -156,20 +231,6 @@ export default function Login({ onLogin }) {
       setIsLoading(false);
       setAuthMessage("Could not connect to the backend. Check that the FastAPI server is running and try again.");
     }
-  }
-
-  function handleDemoFill() {
-    setAuthMode("signin");
-    setName("");
-    setEmail("alex.kumar@spendai.io");
-    setPassword("password123");
-    setConfirmPassword("password123");
-    setErrors({});
-    setAuthMessage("✨ Demo credentials loaded! Click Sign In to continue.");
-  }
-
-  function explainSocialLoginUnavailable(provider) {
-    setAuthMessage(`${provider} sign-in is not configured yet. Use email and password instead.`);
   }
 
   if (transitionUser) {
@@ -246,12 +307,12 @@ export default function Login({ onLogin }) {
               </div>
 
               <h2 className="showcase-heading">
-                Take control of your finances with automated AI classification.
+                Make sense of every expense, automatically.
               </h2>
 
               <p className="showcase-subheading">
-                Automatically categorize receipts, visualize spending trends, and receive
-                monthly insights with AI-powered expense categorization.
+                Categorize transactions with AI, track spending patterns, and explore
+                clear reports from one simple workspace.
               </p>
 
               {/* Floating Feature Cards Preview */}
@@ -260,28 +321,20 @@ export default function Login({ onLogin }) {
                   <div className="feature-card-icon">⚡</div>
                   <div className="feature-card-text">
                     <strong>AI-Powered Categorization</strong>
-                    <span>Gemini AI with rule-based fallback</span>
+                    <span>Organize transactions as you add them</span>
                   </div>
                 </div>
 
                 <div className="feature-card preview-card-2">
                   <div className="feature-card-icon">🔒</div>
                   <div className="feature-card-text">
-                    <strong>Bank-Grade Privacy</strong>
-                    <span>256-bit encrypted data isolation</span>
+                    <strong>Privacy &amp; Security</strong>
+                    <span>Email and password protected access</span>
                   </div>
                 </div>
               </div>
             </div>
 
-            <div className="showcase-footer">
-              <div className="user-avatars-group">
-                <div className="mini-avatar">AK</div>
-                <div className="mini-avatar">JD</div>
-                <div className="mini-avatar">SP</div>
-              </div>
-              <span>Trusted by 10,000+ smart professionals</span>
-            </div>
           </div>
         </div>
 
@@ -315,6 +368,7 @@ export default function Login({ onLogin }) {
               <button
                 type="button"
                 className={authMode === "signin" ? "mode-btn active" : "mode-btn"}
+                aria-pressed={authMode === "signin"}
                 onClick={() => {
                   setAuthMode("signin");
                   setErrors({});
@@ -326,6 +380,7 @@ export default function Login({ onLogin }) {
               <button
                 type="button"
                 className={authMode === "create" ? "mode-btn active" : "mode-btn"}
+                aria-pressed={authMode === "create"}
                 onClick={() => {
                   setAuthMode("create");
                   setErrors({});
@@ -340,30 +395,13 @@ export default function Login({ onLogin }) {
               <h3>{authMode === "signin" ? "Welcome back" : "Create your account"}</h3>
               <p>
                 {authMode === "signin"
-                  ? "Sign in to access your AI expense workspace"
-                  : "Create an account and start categorizing your spending"}
+              ? "Sign in to access your expense workspace."
+              : "Create an account to get started."}
               </p>
             </div>
 
-            {import.meta.env.DEV && (
-              <div className="demo-credentials-banner">
-                <div className="demo-icon">💡</div>
-                <div className="demo-content">
-                  <strong>Looking for a quick demo?</strong>
-                  <span>Try one-click login with prefilled credentials.</span>
-                </div>
-                <button
-                  type="button"
-                  className="demo-action-btn"
-                  onClick={handleDemoFill}
-                >
-                  Autofill Demo
-                </button>
-              </div>
-            )}
-
             {authMessage && (
-              <div className="auth-alert-message">
+              <div className="auth-alert-message" role="alert" aria-live="polite">
                 <span>{authMessage}</span>
               </div>
             )}
@@ -394,14 +432,30 @@ export default function Login({ onLogin }) {
                       placeholder="Alex Kumar"
                       value={name}
                       onChange={(e) => {
-                        setName(e.target.value);
+                        const inputValue = e.target.value;
+                        const cursorPosition = e.target.selectionStart ?? inputValue.length;
+                        const formattedValue = formatFullName(inputValue, true);
+                        const formattedCursor = formatFullName(
+                          inputValue.slice(0, cursorPosition),
+                          true
+                        ).length;
+                        setName(formattedValue);
+                        if (formattedValue !== inputValue) {
+                          requestAnimationFrame(() => {
+                            e.target.setSelectionRange(formattedCursor, formattedCursor);
+                          });
+                        }
                         if (errors.name) setErrors((prev) => ({ ...prev, name: "" }));
                       }}
+                      onBlur={() => setName(formatFullName(name))}
                       autoComplete="name"
                       autoFocus
+                      required
+                      aria-invalid={Boolean(errors.name)}
+                      aria-describedby={errors.name ? "name-error" : undefined}
                     />
                   </div>
-                  {errors.name && <span className="field-error-text">{errors.name}</span>}
+                  {errors.name && <span id="name-error" className="field-error-text">{errors.name}</span>}
                 </div>
               )}
 
@@ -434,26 +488,17 @@ export default function Login({ onLogin }) {
                       if (errors.email) setErrors((prev) => ({ ...prev, email: "" }));
                     }}
                     autoComplete="email"
+                    required
+                    aria-invalid={Boolean(errors.email)}
+                    aria-describedby={errors.email ? "email-error" : undefined}
                   />
                 </div>
-                {errors.email && <span className="field-error-text">{errors.email}</span>}
+                {errors.email && <span id="email-error" className="field-error-text">{errors.email}</span>}
               </div>
 
               {/* Password Input */}
               <div className="login-field-group">
-                <div className="label-with-link">
-                  <label htmlFor="password">Password</label>
-                  <a
-                    href="#forgot"
-                    className="forgot-link"
-                    onClick={(e) => {
-                      e.preventDefault();
-                      setAuthMessage("🔒 For this demo, please use the Autofill Demo button above.");
-                    }}
-                  >
-                    Forgot password?
-                  </a>
-                </div>
+                <label htmlFor="password">Password</label>
                 <div className={`input-wrapper ${errors.password ? "input-error" : ""}`}>
                   <span className="input-icon">
                     <svg
@@ -480,12 +525,15 @@ export default function Login({ onLogin }) {
                       if (errors.password) setErrors((prev) => ({ ...prev, password: "" }));
                     }}
                     autoComplete={authMode === "create" ? "new-password" : "current-password"}
+                    required
+                    aria-invalid={Boolean(errors.password)}
+                    aria-describedby={errors.password ? "password-error" : undefined}
                   />
                   <button
                     type="button"
                     className="toggle-password-btn"
                     onClick={() => setShowPassword(!showPassword)}
-                    tabIndex="-1"
+                    aria-label={showPassword ? "Hide password" : "Show password"}
                     title={showPassword ? "Hide password" : "Show password"}
                   >
                     {showPassword ? (
@@ -521,7 +569,7 @@ export default function Login({ onLogin }) {
                     )}
                   </button>
                 </div>
-                {errors.password && <span className="field-error-text">{errors.password}</span>}
+                {errors.password && <span id="password-error" className="field-error-text">{errors.password}</span>}
               </div>
 
               {authMode === "create" && (
@@ -555,26 +603,16 @@ export default function Login({ onLogin }) {
                         }
                       }}
                       autoComplete="new-password"
+                      required
+                      aria-invalid={Boolean(errors.confirmPassword)}
+                      aria-describedby={errors.confirmPassword ? "confirm-password-error" : undefined}
                     />
                   </div>
                   {errors.confirmPassword && (
-                    <span className="field-error-text">{errors.confirmPassword}</span>
+                    <span id="confirm-password-error" className="field-error-text">{errors.confirmPassword}</span>
                   )}
                 </div>
               )}
-
-              {/* Remember Me */}
-              <div className="login-options-row">
-                <label className="remember-me-label">
-                  <input
-                    type="checkbox"
-                    checked={rememberMe}
-                    onChange={(e) => setRememberMe(e.target.checked)}
-                  />
-                  <span className="checkbox-custom"></span>
-                  <span>Remember this device</span>
-                </label>
-              </div>
 
               {/* Submit Button */}
               <button
@@ -608,75 +646,6 @@ export default function Login({ onLogin }) {
               </button>
             </form>
 
-            <div className="login-divider">
-              <span>or sign in with</span>
-            </div>
-
-            {/* Social Logins */}
-            <div className="social-buttons-grid">
-              <button
-                type="button"
-                className="social-btn"
-                onClick={() => explainSocialLoginUnavailable("Google")}
-              >
-                <svg width="18" height="18" viewBox="0 0 24 24">
-                  <path
-                    fill="#4285F4"
-                    d="M23.745 12.27c0-.7-.06-1.4-.19-2.07H12v4.51h6.6c-.29 1.52-1.14 2.8-2.4 3.65v3.05h3.88c2.27-2.09 3.665-5.17 3.665-9.14z"
-                  />
-                  <path
-                    fill="#34A853"
-                    d="M12 24c3.24 0 5.95-1.08 7.93-2.91l-3.88-3.05c-1.08.72-2.45 1.16-4.05 1.16-3.12 0-5.77-2.1-6.72-4.93H1.25v3.15C3.26 21.36 7.34 24 12 24z"
-                  />
-                  <path
-                    fill="#FBBC05"
-                    d="M5.28 14.27c-.25-.72-.38-1.49-.38-2.27s.13-1.55.38-2.27V6.58H1.25C.45 8.18 0 9.99 0 12s.45 3.82 1.25 5.42l4.03-3.15z"
-                  />
-                  <path
-                    fill="#EA4335"
-                    d="M12 4.75c1.77 0 3.35.61 4.6 1.8l3.42-3.42C17.95 1.19 15.24 0 12 0 7.34 0 3.26 2.64 1.25 6.58l4.03 3.15c.95-2.83 3.6-4.98 6.72-4.98z"
-                  />
-                </svg>
-                Google
-              </button>
-
-              <button
-                type="button"
-                className="social-btn"
-                onClick={() => explainSocialLoginUnavailable("GitHub")}
-              >
-                <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
-                  <path
-                    fillRule="evenodd"
-                    clipRule="evenodd"
-                    d="M12 2C6.477 2 2 6.484 2 12.017c0 4.425 2.865 8.18 6.839 9.504.5.092.682-.217.682-.483 0-.237-.008-.868-.013-1.703-2.782.605-3.369-1.343-3.369-1.343-.454-1.158-1.11-1.466-1.11-1.466-.908-.62.069-.608.069-.608 1.003.07 1.53 1.032 1.53 1.032.892 1.53 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.113-4.555-4.951 0-1.093.39-1.988 1.029-2.688-.103-.253-.446-1.272.098-2.65 0 0 .84-.27 2.75 1.026A9.564 9.564 0 0 1 12 6.844c.85.004 1.705.115 2.504.337 1.909-1.296 2.747-1.027 2.747-1.027.546 1.379.202 2.398.1 2.651.64.7 1.028 1.595 1.028 2.688 0 3.848-2.339 4.695-4.566 4.943.359.309.678.92.678 1.855 0 1.338-.012 2.419-.012 2.747 0 .268.18.58.688.482A10.019 10.019 0 0 0 22 12.017C22 6.484 17.522 2 12 2z"
-                  />
-                </svg>
-                GitHub
-              </button>
-            </div>
-
-            <div className="login-card-footer">
-              <p>
-                Don&apos;t have an account? Use the Create Account option above.
-              </p>
-              <div className="secure-badge">
-                <svg
-                  width="13"
-                  height="13"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="2"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                >
-                  <rect width="18" height="11" x="3" y="11" rx="2" ry="2" />
-                  <path d="M7 11V7a5 5 0 0 1 10 0v4" />
-                </svg>
-                <span>Bank-grade 256-bit encryption</span>
-              </div>
-            </div>
           </div>
         </div>
       </div>

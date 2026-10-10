@@ -14,6 +14,17 @@
     />
 
     <title>SpendAI - AI Expense Categorizer</title>
+    <script>
+      try {
+        const savedTheme = localStorage.getItem("spendai_theme");
+        const theme = savedTheme === "light" ? "light" : "dark";
+        document.documentElement.dataset.theme = theme;
+        document.documentElement.style.colorScheme = theme;
+      } catch {
+        document.documentElement.dataset.theme = "dark";
+        document.documentElement.style.colorScheme = "dark";
+      }
+    </script>
   </head>
 
   <body>

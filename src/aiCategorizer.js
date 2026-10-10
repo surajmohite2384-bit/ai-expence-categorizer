@@ -20,9 +20,9 @@ export async function predictCategory({
   merchant = "",
   amount = 0,
   payment_method = "",
+  token = null,
 }) {
   try {
-    const token = typeof window !== "undefined" ? localStorage.getItem("spendai_token") : null;
     const headers = {
       "Content-Type": "application/json",
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
@@ -30,6 +30,7 @@ export async function predictCategory({
     const response = await fetch(`${API_BASE_URL}/predictCategory`, {
       method: "POST",
       headers,
+      credentials: "include",
       body: JSON.stringify({ merchant, amount: Number(amount), payment_method }),
     });
     const result = await response.json();

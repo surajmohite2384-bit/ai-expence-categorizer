@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useState } from "react";
 import "./App.css";
 import Login from "./Login.jsx";
 import { predictCategory } from "./aiCategorizer.js";
@@ -407,26 +407,43 @@ function computeAnalyticsData(expenses, range) {
 function App() {
   const [theme, setTheme] = useState(() => {
     const savedTheme = localStorage.getItem("spendai_theme");
-    return savedTheme === "dark" ? "dark" : "light";
+    return savedTheme === "light" ? "light" : "dark";
   });
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     document.documentElement.setAttribute("data-theme", theme);
     document.documentElement.style.colorScheme = theme;
     localStorage.setItem("spendai_theme", theme);
   }, [theme]);
 
+  const [authToken, setAuthToken] = useState(null);
   const [isAuthenticated, setIsAuthenticated] = useState(() => {
     return localStorage.getItem("spendai_authenticated") === "true";
   });
   const [currentUser, setCurrentUser] = useState(() => {
     const saved = localStorage.getItem("spendai_user");
     try {
-      return saved ? JSON.parse(saved) : { name: "Alex Kumar", email: "alex.kumar@spendai.io" };
+      if (!saved) return { name: "Alex Kumar", email: "alex.kumar@spendai.io" };
+      const userProfile = JSON.parse(saved);
+      if (userProfile && typeof userProfile === "object") delete userProfile.token;
+      return userProfile || { name: "Alex Kumar", email: "alex.kumar@spendai.io" };
     } catch {
       return { name: "Alex Kumar", email: "alex.kumar@spendai.io" };
     }
   });
+
+  useEffect(() => {
+    localStorage.removeItem("spendai_token");
+    const savedUser = localStorage.getItem("spendai_user");
+    if (savedUser) {
+      try {
+        const { token, ...userProfile } = JSON.parse(savedUser);
+        if (token) localStorage.setItem("spendai_user", JSON.stringify(userProfile));
+      } catch {
+        return;
+      }
+    }
+  }, []);
 
   const [expenses, setExpenses] = useState([]);
   const [activePage, setActivePage] = useState("dashboard");
@@ -469,7 +486,7 @@ function App() {
 
     async function loadExpenses() {
       try {
-        const token = localStorage.getItem("spendai_token");
+        const token = authToken;
         const headers = token ? { Authorization: `Bearer ${token}` } : {};
         const response = await fetch(`${API_BASE_URL}/expenses`, {
           headers,
@@ -503,7 +520,7 @@ function App() {
     return () => {
       controller.abort();
     };
-  }, [currentUser?.email, isAuthenticated]);
+  }, [authToken, currentUser?.email, isAuthenticated]);
 
   const emptyForm = {
     merchant: "",
@@ -563,6 +580,7 @@ function App() {
         merchant: form.merchant.trim(),
         amount: form.amount || 0,
         payment_method: form.payment,
+        token: authToken,
       }).then((prediction) => {
         if (active && prediction) {
           setAiPrediction(prediction);
@@ -792,6 +810,7 @@ function App() {
           merchant: form.merchant.trim(),
           amount: form.amount,
           payment_method: form.payment,
+          token: authToken,
         });
         if (fallback?.category) {
           categoryToSave = fallback.category;
@@ -817,7 +836,7 @@ function App() {
     const method = isEditMode && editingExpenseId ? "PUT" : "POST";
 
     try {
-      const token = localStorage.getItem("spendai_token");
+      const token = authToken;
       const headers = {
         "Content-Type": "application/json",
         ...(token ? { Authorization: `Bearer ${token}` } : {}),
@@ -868,7 +887,7 @@ function App() {
     }
 
     try {
-      const token = localStorage.getItem("spendai_token");
+      const token = authToken;
       const headers = token ? { Authorization: `Bearer ${token}` } : {};
       const response = await fetch(`${API_BASE_URL}/expenses/${expenseId}`, {
         method: "DELETE",
@@ -894,22 +913,22 @@ function App() {
   }
 
   function handleLogin(userData) {
+    const { token, ...userProfile } = userData;
     const account = {
-      ...userData,
-      email: userData.email.trim().toLowerCase(),
+      ...userProfile,
+      email: userProfile.email.trim().toLowerCase(),
     };
     setExpenses([]);
+    setAuthToken(token || null);
     setIsAuthenticated(true);
     setCurrentUser(account);
     localStorage.setItem("spendai_authenticated", "true");
     localStorage.setItem("spendai_user", JSON.stringify(account));
-    if (userData?.token) {
-      localStorage.setItem("spendai_token", userData.token);
-    }
   }
 
   function handleLogout() {
     setExpenses([]);
+    setAuthToken(null);
     setIsAuthenticated(false);
     localStorage.removeItem("spendai_authenticated");
     localStorage.removeItem("spendai_user");
@@ -2471,12 +2490,12 @@ function Settings({
       <div className="panel settings-panel">
         <div className="settings-row">
           <div>
-            <h4>Theme</h4>
+            <h4>Appearance</h4>
             <p>Switch between light and dark mode.</p>
           </div>
 
           <div className="theme-control">
-            <span className={`theme-mode ${theme === "light" ? "active" : ""}`}>
+            <span id="theme-light-label" className={`theme-mode ${theme === "light" ? "active" : ""}`}>
               Light
             </span>
 
@@ -2484,6 +2503,7 @@ function Settings({
               <input
                 type="checkbox"
                 checked={theme === "dark"}
+                aria-labelledby="theme-light-label theme-dark-label"
                 onChange={(event) =>
                   setTheme(event.target.checked ? "dark" : "light")
                 }
@@ -2491,7 +2511,7 @@ function Settings({
               <span></span>
             </label>
 
-            <span className={`theme-mode ${theme === "dark" ? "active" : ""}`}>
+            <span id="theme-dark-label" className={`theme-mode ${theme === "dark" ? "active" : ""}`}>
               Dark
             </span>
           </div>

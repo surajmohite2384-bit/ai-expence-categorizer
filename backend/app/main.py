@@ -98,6 +98,13 @@ def verify_password(password: str, stored_hash: str) -> bool:
         return False
 
 
+def normalize_full_name(name: str) -> str:
+    return " ".join(
+        word[0].upper() + word[1:].lower()
+        for word in name.split()
+    )
+
+
 def migrate_legacy_passwords(db: Session) -> int:
     """Replace legacy plaintext password records with salted hashes."""
     legacy_users = (
@@ -395,7 +402,7 @@ def signup(
     response: Response,
     db: Session = Depends(get_db),
 ):
-    clean_name = payload.name.strip()
+    clean_name = normalize_full_name(payload.name)
     clean_email = payload.email.strip().lower()
     clean_password = payload.password.strip()
 
@@ -669,4 +676,3 @@ if dist_path:
     app.mount("/", StaticFiles(directory=dist_path, html=True), name="static")
 else:
     logger.info("Frontend static build directory not mounted (no dist found).")
-

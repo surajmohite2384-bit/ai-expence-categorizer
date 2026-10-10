@@ -111,13 +111,14 @@ def test_auth_signup_and_login(client):
     """Test user registration, duplicate checks, and login authentication."""
     # 1. Sign up user
     signup_res = client.post("/auth/signup", json={
-        "name": "Test User",
+        "name": "  tEST   uSER ",
         "email": "test@example.com",
         "password": "securepassword123",
     })
     assert signup_res.status_code == 200
     user_data = signup_res.json()
     assert user_data["email"] == "test@example.com"
+    assert user_data["name"] == "Test User"
     assert "token" in user_data
     token = user_data["token"]
     assert len(token) > 20
@@ -146,6 +147,30 @@ def test_auth_signup_and_login(client):
         "password": "wrongpassword",
     })
     assert bad_login.status_code == 401
+
+
+@pytest.mark.parametrize(
+    ("submitted_name", "expected_name"),
+    [
+        ("suraj mohite", "Suraj Mohite"),
+        ("SURAJ MOHITE", "Suraj Mohite"),
+        ("sUrAj mOhItE", "Suraj Mohite"),
+        (" rahul  sharma ", "Rahul Sharma"),
+        ("pratiksha mane", "Pratiksha Mane"),
+    ],
+)
+def test_signup_normalizes_full_name(client, submitted_name, expected_name):
+    response = client.post(
+        "/auth/signup",
+        json={
+            "name": submitted_name,
+            "email": f"{expected_name.lower().replace(' ', '.')}@example.com",
+            "password": "securepassword123",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["name"] == expected_name
 
 
 def test_expense_crud_and_cross_user_isolation(client):
